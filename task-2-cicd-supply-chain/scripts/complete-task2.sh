@@ -31,9 +31,20 @@ command -v gh >/dev/null || die "gh not found on PATH"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated. Run: gh auth login"
 echo "  gh authenticated as: $(gh api user --jq .login 2>/dev/null)"
 
-command -v docker >/dev/null || die "docker not found"
-docker info >/dev/null 2>&1 || die "Docker daemon is not running. Free some RAM and start Docker Desktop."
-echo "  docker up"
+# Docker is NOT required for most of this script. The repo push, the pipeline,
+# the image build, cosign signing and the SARIF upload all happen on GitHub's
+# runners. Only the ArgoCD stage at the end needs a local cluster, so a missing
+# Docker daemon degrades that one stage instead of blocking everything.
+DOCKER_OK=0
+if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  DOCKER_OK=1
+  echo "  docker up (ArgoCD stage will run)"
+else
+  warn "Docker is not running. Everything except the ArgoCD/GitOps stage will"
+  warn "still run; that stage will be skipped and can be done later with:"
+  warn "  ./task-2-cicd-supply-chain/scripts/bootstrap-argocd.sh <repo-url>"
+  warn "  ./task-2-cicd-supply-chain/scripts/demo-drift.sh"
+fi
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not a git repository"
 if [ -n "$(git status --porcelain)" ]; then
@@ -139,8 +150,9 @@ cat "$EVIDENCE/04-sarif-security-tab.txt" | tail -5
 # GitOps.
 log "Bootstrapping ArgoCD against ${REPO_URL}"
 
-if ! kubectl get nodes >/dev/null 2>&1; then
-  warn "no reachable cluster; skipping ArgoCD. Run task-1 deploy.sh first, then:"
+if [ "$DOCKER_OK" -eq 0 ] || ! kubectl get nodes >/dev/null 2>&1; then
+  warn "no reachable cluster; skipping ArgoCD. Once Docker is up, run:"
+  warn "  ./task-1-workload-hardening/scripts/deploy.sh    # if the cluster is gone"
   warn "  ./task-2-cicd-supply-chain/scripts/bootstrap-argocd.sh ${REPO_URL}"
   warn "  ./task-2-cicd-supply-chain/scripts/demo-drift.sh"
 else
