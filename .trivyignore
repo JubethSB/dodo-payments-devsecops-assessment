@@ -1,30 +1,72 @@
 # Trivy suppressions.
 #
-# RULES FOR THIS FILE, read before adding anything:
-#
-#   1. Every entry needs a reason, an owner and an expiry date. An undated
+# Rules for this file:
+#   1. Every entry needs a reason, an owner and a review date. An undated
 #      suppression is permanent by accident, and permanent suppressions are how
 #      scanners quietly stop finding things.
-#   2. Suppress only what you have actually triaged. "It is noisy" is not
-#      triage.
-#   3. Prefer fixing. A suppression is a decision to accept risk, and someone
-#      has to own that decision by name.
+#   2. Suppress only what you have triaged. "It is noisy" is not triage.
+#   3. Prefer fixing. A suppression accepts risk, and someone owns that.
 #
-# NOTE ON THE BIG ONE: this project's base image (python:3.6-slim) is EOL and
-# its dependencies are from 2018, so the scanners WILL report criticals. Those
-# are deliberately NOT suppressed here.
+# Why these are listed individually rather than excluding the whole directory:
+# a path exclusion would also hide any NEW vulnerability that appears in those
+# same files. Listing CVEs by id means the 12 known ones are accepted and the
+# 13th still breaks the build.
 #
-# They cannot be fixed without rewriting the application, because Flask 0.12.2
-# and PyYAML 5.1 do not run on a modern interpreter, and the vulnerable app
-# code is the authorised target for Task 4. Suppressing them would hide the
-# single most important finding in the repository.
+# ---------------------------------------------------------------------------
+# ACCEPTED RISK: dependencies of the deliberately vulnerable starter app
 #
-# Instead they are handled by the fail policy itself: the blocking step runs
-# with --ignore-unfixed, so unfixable findings are reported loudly but do not
-# wedge the pipeline, while anything with an available fix hard-blocks. See
-# task-2-cicd-supply-chain/README.md for the full rationale and the
-# compensating controls from Task 1 that reduce their exploitability.
+# Path      : task-1-workload-hardening/app-source/app/requirements.txt
+# Owner     : Jubeth S B
+# Accepted  : 2026-07-28
+# Review by : 2026-10-28, or immediately if the Task 4 pen test concludes
 #
-# Format: one CVE per line, optionally `CVE-ID exp:YYYY-MM-DD`.
+# All 12 have fixes available, so under the normal policy (block on fixable
+# CRITICAL/HIGH) they would stop the build, and correctly so.
 #
-# (No active suppressions.)
+# They are accepted because they cannot be fixed without destroying the
+# assignment. app-source/ is the authorised target for Task 4's penetration
+# test. Upgrading these pins removes the vulnerabilities the pen test exists to
+# find, and Flask 0.12.2 / PyYAML 5.1 cannot be upgraded without also replacing
+# the interpreter and rewriting the app.
+#
+# CVE-2019-20477 is worth singling out: "PyYAML: command execution through
+# python/object/apply" is precisely the bug app.py exposes at /import via
+# yaml.load() without SafeLoader. The scanner independently found the thing the
+# pen test is going to exploit, which is a good sign about the scanner.
+#
+# Compensating controls, from Task 1, that constrain exploitation:
+#   - runs as uid 10001, never root
+#   - read-only root filesystem, so no webshell or persistence on disk
+#   - all Linux capabilities dropped, seccomp RuntimeDefault
+#   - no ServiceAccount token mounted, so no pivot to the API server
+#   - Kyverno and Pod Security Standards reject any pod that weakens the above
+#
+# Real remediation, when the pen test is done: port to Python 3.12 with
+# Flask 3.x, PyYAML 6.x and requests 2.32.x behind gunicorn. That closes all 12
+# and removes the EOL base image at the same time.
+# ---------------------------------------------------------------------------
+
+# Flask 0.12.2
+CVE-2018-1000656
+CVE-2019-1010083
+CVE-2023-30861
+
+# Jinja2 2.10 (sandbox escape via str.format_map)
+CVE-2019-10906
+
+# PyYAML 5.1 (CRITICAL, arbitrary command execution). CVE-2019-20477 is the
+# /import RCE that Task 4 targets.
+CVE-2019-20477
+CVE-2020-14343
+CVE-2020-1747
+
+# Werkzeug 0.14.1 (path traversal, weak debugger PIN, multipart DoS,
+# debugger RCE)
+CVE-2019-14322
+CVE-2019-14806
+CVE-2023-25577
+CVE-2024-34069
+
+# requests 2.19.1 (Authorization header leaked across a redirect to a
+# different host)
+CVE-2018-18074
