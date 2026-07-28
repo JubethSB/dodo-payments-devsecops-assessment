@@ -339,7 +339,61 @@ security controls had a security bug, and the control caught it. It also would
 never have surfaced from local validation, because nothing local evaluates
 GitHub Actions expression syntax.
 
-**5. A broken scanner config is indistinguishable from a failing gate.**
+**5. Two scanners owned the same concern.**
+
+With the version pinned, Trivy's filesystem scan blocked the build, but not on
+a CVE. It blocked on the starter app's plaintext `sk_live_` key, because
+`scan-type: fs` runs `vuln` + `secret` + `misconfig` by default.
+
+That key was already handled: gitleaks is the secrets gate and `.gitleaks.toml`
+allowlists that one file with a documented reason. Leaving Trivy's secret
+scanner on meant two tools policing secrets with different rulesets and no
+shared allowlist, so satisfying one would not satisfy the other and every
+future exception would have to be written twice in two formats.
+
+Fixed by giving each tool one lane: `scanners: vuln` on every Trivy step.
+gitleaks owns secrets, Trivy owns CVEs.
+
+**6. The CVE gate then blocked on 12 fixable findings, which is the policy
+working.**
+
+3 CRITICAL and 9 HIGH in `app-source/app/requirements.txt`, every one with a
+fix available. Under the stated policy, block on fixable, those correctly stop
+the build.
+
+One of them is worth pointing at: `CVE-2019-20477`, *"PyYAML: command execution
+through python/object/apply"*. That is exactly the `/import` RCE in `app.py`
+that Task 4 exists to exploit. The dependency scanner independently found the
+bug the penetration test is built around, which is a useful sanity check on
+both.
+
+They cannot be fixed here. Upgrading the pins removes Task 4's target, and
+Flask 0.12.2 / PyYAML 5.1 do not run on a modern interpreter, so the upgrade is
+really an application rewrite.
+
+**How they are suppressed matters more than that they are.** They are listed in
+`.trivyignore` as individual CVE ids, not as a path exclusion. A path exclusion
+would also hide any *new* vulnerability appearing in those files; listing ids
+means these 12 are accepted and a 13th still breaks the build. Each entry
+carries an owner, an accepted date, a review date, the Task 1 compensating
+controls that constrain exploitation, and the actual remediation.
+
+**The image gate needed a different answer.** The base image contributes about
+149 fixable CRITICAL/HIGH findings in Debian packages. "Fixable" is technically
+true and practically false: every fix lives in a newer Debian release, so the
+only real remediation is changing the base image, which again means rewriting
+the app.
+
+Listing 149 ids would be padding that conceals the 150th. Blocking on them
+leaves the pipeline permanently red. So the image gate blocks on `library`
+findings, the dependencies this repo actually controls, and reports OS findings
+without blocking, recorded as one tracked risk rather than 149 suppressions.
+
+That is an accepted risk, not a clean bill of health. Moving to a supported
+base image closes both categories at once and is the real fix once the pen test
+concludes.
+
+**7. A broken scanner config is indistinguishable from a failing gate.**
 
 The gitleaks job failed with `unable to load gitleaks config: toml: array
 elements must be separated by commas`. An earlier bulk punctuation edit across
