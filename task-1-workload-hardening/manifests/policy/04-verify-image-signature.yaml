@@ -1,4 +1,4 @@
-# Kyverno — reject unsigned images.
+# Kyverno, reject unsigned images.
 #
 # This is the third guardrail Task 1 asks for ("reject containers that ... are
 # unsigned") and the admission-side half of Task 2's supply-chain work: Task 2
@@ -11,7 +11,7 @@
 #   - cosign exchanges it with Fulcio for an ephemeral X.509 cert carrying that
 #     workflow identity, signs, and logs the entry to the Rekor transparency log.
 #   - The signing key lives for ~10 minutes and is never stored, so there is no
-#     long-lived private key to leak — the classic failure mode of key-based
+#     long-lived private key to leak, the classic failure mode of key-based
 #     signing.
 #   - Verification asserts provenance, not safety: "this image was built by
 #     THIS workflow in THIS repo". It does not claim the image is free of CVEs;
@@ -19,7 +19,7 @@
 #     different questions.
 #
 # subject/issuer are the load-bearing fields. Verifying "signed by someone" is
-# worthless — anyone can sign anything through Fulcio. The check must pin the
+# worthless, anyone can sign anything through Fulcio. The check must pin the
 # expected workflow identity, which is what these two do.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -31,11 +31,11 @@ metadata:
     policies.kyverno.io/severity: critical
     policies.kyverno.io/subject: Pod
 spec:
-  # NOTE ON ROLLOUT ORDER — deliberately Audit, not Enforce, in Task 1.
+  # NOTE ON ROLLOUT ORDER, deliberately Audit, not Enforce, in Task 1.
   #
-  # Task 1 runs entirely on locally-built images (ledger-api:0.1.0,
+  # Task 1 runs entirely on locally-built images (ledger-api:0.1.0.
   # reporting:0.1.0) that are side-loaded into the cluster and never pushed to
-  # a registry, so they have no signature and no Rekor entry — there is nothing
+  # a registry, so they have no signature and no Rekor entry, there is nothing
   # to verify. Setting Enforce here would block the very workload this task is
   # meant to deploy, and "we turned the policy off to make it work" is exactly
   # the failure this assessment is testing for.
@@ -66,7 +66,7 @@ spec:
           #
           # It is false here ONLY because Kyverno rejects mutateDigest:true
           # while validationFailureAction is Audit ("mutateDigest must be set
-          # to false for 'Audit' failure action") — an audit-mode policy is not
+          # to false for 'Audit' failure action"), an audit-mode policy is not
           # permitted to change the resource it is merely observing. This flips
           # to true at the same moment the action flips to Enforce in Task 2.
           mutateDigest: false

@@ -1,12 +1,427 @@
-# Built in Phase 7 (Task 2 — Secure CI/CD Pipeline & Supply Chain).
-# Lives at repo root because GitHub Actions only reads .github/workflows/ here,
-# regardless of which task folder it logically belongs to.
+# Secure delivery pipeline for ledger-api.
+#
+# Has to live at the repo root; Actions only reads .github/workflows/ from here.
+# Full rationale and fail policies are in task-2-cicd-supply-chain/README.md.
+#
+#   secrets-scan +
+#   sast         +-> build -> image-scan -> sign-and-attest -> update-gitops
+#   deps-scan    +
+#
+# Source gates run first and in parallel because none of them needs an image.
+# A broken commit fails in about a minute rather than after a full build.
+#
+# Signing runs after the image scan. Signing something we haven't scanned would
+# attest provenance for a container nobody has looked at, which is worse than
+# not signing at all.
+
 name: ci-cd
+
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/screenshots/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Jobs escalate from here as needed. Note there's no packages:write at this
+# level; only the build job gets it.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ledger-api
+  # CI builds the hardened Dockerfile from Task 1, not the insecure starter
+  # one that ships alongside the app source.
+  APP_DIR: task-1-workload-hardening/app-source/app
+  HARDENED_DOCKERFILE: task-1-workload-hardening/app-image/Dockerfile
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  placeholder:
+  # Gate 1: secrets. Hard block on anything, no warn mode.
+  # A pushed credential is live immediately and can't be un-published.
+  #
+  # app-source/deploy/deployment.yaml is allowlisted in .gitleaks.toml because
+  # it's the assignment's starter file and its fake sk_live_ key is the "before"
+  # state Task 1 rejects. That's a path allowlist for one file, so a secret
+  # anywhere else still fails the build.
+  secrets-scan:
+    name: Secrets scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - run: echo "pipeline to be built in Phase 7"
+      - uses: actions/checkout@v4
+        with:
+          # Full history. A secret deleted in the tip commit is still live if
+          # it's in an earlier one, and scanning only the working tree is the
+          # usual way this gate gets quietly defeated.
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  # Gate 2: SAST. Block on ERROR, warn on the rest.
+  # ERROR findings are high confidence (this app has yaml.load without
+  # SafeLoader and an unvalidated requests.get). WARNING has enough false
+  # positives that blocking on it just teaches people to route around the gate.
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan and emit SARIF
+        # `|| true` so the SARIF still uploads when there are findings. The
+        # blocking decision happens in the next step, not here.
+        run: |
+          semgrep scan \
+            --config=p/default \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/dockerfile \
+            --config=p/kubernetes \
+            --sarif --output=semgrep.sarif \
+            --metrics=off || true
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Block on ERROR
+        run: |
+          semgrep scan \
+            --config=p/default \
+            --config=p/security-audit \
+            --config=p/python \
+            --config=p/dockerfile \
+            --config=p/kubernetes \
+            --severity=ERROR \
+            --error \
+            --metrics=off
+
+  # Gate 3: dependencies. Block on fixable CRITICAL/HIGH, warn on unfixed.
+  #
+  # The unfixed part is the important bit. There's no patch to apply, so the
+  # only ways back to green are suppressing the finding or not deploying, and
+  # under delivery pressure people suppress. Then the gate is blind for
+  # everything, including the findings that DO have fixes.
+  #
+  # Measured on this image: 182 CRITICAL/HIGH, 149 fixable, 33 unfixed.
+  # Unfixed ones get triaged out of band instead (reachability, compensating
+  # control, owner, review date) and start blocking as soon as a fix ships.
+  deps-scan:
+    name: Dependency scan (Trivy fs)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy fs scan, SARIF
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          # Report unfixed here so the Security tab shows the real picture.
+          ignore-unfixed: false
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Report everything, including unfixed (never blocks)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Block on fixable CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+  build:
+    name: Build and push image
+    needs: [secrets-scan, sast, deps-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # No registry login on pull_request. A PR from a fork must not be able to
+      # push. The build still runs and the gates still apply, it just isn't
+      # published.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Immutable tags only. Task 1's Kyverno policy rejects :latest at
+          # admission anyway, and a mutable tag makes the signature meaningless
+          # because you can't say which bytes were signed.
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Assemble build context
+        # The hardened Dockerfile lives outside the app dir, so stage them
+        # together rather than using the whole repo as build context.
+        run: |
+          mkdir -p build-ctx
+          cp "${APP_DIR}/app.py" "${APP_DIR}/requirements.txt" build-ctx/
+          cp "${HARDENED_DOCKERFILE}" build-ctx/Dockerfile
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: build-ctx
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # BuildKit's own SBOM and provenance attestations, attached at push.
+          # This is the SLSA-style provenance: what went in, and which builder
+          # produced it.
+          sbom: true
+          provenance: mode=max
+
+      - name: Check the image isn't root
+        # Cheap, and it turns a confusing admission rejection later into an
+        # obvious build failure now.
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          UID_OUT="$(docker run --rm --entrypoint sh "$IMAGE" -c 'id -u')"
+          echo "image runs as uid=${UID_OUT}"
+          if [ "$UID_OUT" = "0" ]; then
+            echo "::error::Image runs as root. The hardened Dockerfile must set USER."
+            exit 1
+          fi
+
+  # Gate 4: image scan. Same policy as the dependency gate, different surface.
+  # The fs scan reads requirements.txt; this reads the OS packages in the base
+  # layer. The base here is python:3.6-slim, which is EOL, so this is the gate
+  # that makes that concrete.
+  image-scan:
+    name: Image scan (Trivy)
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy image scan, SARIF
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          # By digest, not tag. Scanning a tag leaves a window where it could be
+          # repointed between the scan and the deploy.
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Report everything, including unfixed (never blocks)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Block on fixable CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+
+  # Cosign keyless. The job gets a short-lived OIDC token describing this
+  # workflow, trades it with Fulcio for an ephemeral cert, signs, and the entry
+  # goes to Rekor. The key lives ~10 minutes and is never stored, so there's no
+  # signing key to leak.
+  #
+  # The signature says "this came from this workflow in this repo". It says
+  # nothing about CVEs, which is why the scan gate is separate and runs first.
+  #
+  # Task 1's Kyverno policy is the consumer, and flips from Audit to Enforce
+  # once this is publishing signed images.
+  sign-and-attest:
+    name: Sign and attest (cosign keyless)
+    needs: [build, image-scan]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # required for keyless; this is what mints the OIDC token
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: sigstore/cosign-installer@v3.7.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sign by digest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attach the SBOM as a signed attestation
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+
+      - name: Verify
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          # Pin identity AND issuer. "Signed by somebody" is worthless since
+          # anyone can get a Fulcio cert; what matters is that it was signed by
+          # this workflow in this repo.
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/.+@${{ github.ref }}$" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" | tee cosign-verify.txt
+
+      - name: Verify the SBOM attestation
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          cosign verify-attestation \
+            --type spdxjson \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/.+@${{ github.ref }}$" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" > /dev/null
+          echo "SBOM attestation verified"
+
+      - name: Publish evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-evidence
+          path: |
+            cosign-verify.txt
+            sbom.spdx.json
+
+  # No kubectl apply anywhere in this pipeline. It commits a digest and stops;
+  # ArgoCD pulls. That means CI holds no cluster credentials, so a compromised
+  # runner can propose a change but not make one.
+  update-gitops:
+    name: Update GitOps manifest
+    needs: [build, sign-and-attest]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the only job that writes back to the repo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin the deployment to the signed digest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          MANIFEST=task-2-cicd-supply-chain/gitops/ledger-api-deployment.yaml
+          # Digest, not tag. This is the exact artifact that was scanned and
+          # signed; a tag could be repointed afterwards.
+          sed -i -E "s|image: .*/ledger-api@sha256:[a-f0-9]+|image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}|" "$MANIFEST"
+          sed -i -E "s|image: .*/ledger-api:[^@[:space:]]+$|image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}|" "$MANIFEST"
+          git diff --stat
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet; then
+            echo "digest unchanged, nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add task-2-cicd-supply-chain/gitops/
+          git commit -m "gitops: pin ledger-api to ${{ needs.build.outputs.digest }}
+
+          Built, scanned and signed by run ${{ github.run_id }}.
+          [skip ci]"
+          git push

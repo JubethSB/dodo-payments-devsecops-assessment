@@ -1,0 +1,120 @@
+# ledger-api Deployment, the GitOps desired state.
+#
+# THIS FILE IS MACHINE-EDITED. The `update-gitops` job in .github/workflows/
+# ci-cd.yml rewrites the `image:` line below to the digest of the artifact it
+# just built, scanned and signed, then commits. ArgoCD notices the commit and
+# reconciles the cluster. Nothing else in the pipeline touches the cluster.
+#
+# Keep the image line on a single line and in the exact form
+# `image: ghcr.io/<owner>/ledger-api@sha256:<digest>`, the sed expression in
+# that job matches this shape.
+#
+# The security context here is identical to Task 1's hardened Deployment
+# (task-1-workload-hardening/manifests/base/20-ledger-api-deployment.yaml). It
+# is duplicated rather than referenced because ArgoCD syncs a directory path.
+# and the rationale for each field is documented there rather than repeated.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: argocd
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ledger-api
+        app.kubernetes.io/part-of: payments-platform
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: ledger-api
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ledger-api
+          # Digest-pinned, never a tag. This is the exact artifact that passed
+          # the scan gate and carries the cosign signature Kyverno verifies at
+          # admission. A tag could be repointed to different bytes after the
+          # fact, which would break both the scan result and the signature.
+          #
+          # Placeholder until the first pipeline run rewrites it; the local
+          # bootstrap script substitutes the locally-built image so the GitOps
+          # demo works before GHCR is wired up.
+          image: ghcr.io/REPLACE_ME/ledger-api:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: ledger-api-config
+          env:
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ledger-api-secrets
+                  key: STRIPE_API_KEY
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ledger-api-secrets
+                  key: DB_PASSWORD
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 256Mi
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi

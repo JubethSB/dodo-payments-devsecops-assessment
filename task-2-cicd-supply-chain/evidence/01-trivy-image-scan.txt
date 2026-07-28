@@ -1,0 +1,76 @@
+======================================================================
+ EVIDENCE: Trivy image scan — the data behind the fail policy
+ Image  : ledger-api:0.1.0 (hardened build, Task 1)
+ Scanner: aquasec/trivy (same image CI uses)
+ Filter : CRITICAL,HIGH
+======================================================================
+
+HEADLINE NUMBERS
+----------------------------------------------------------------------
+  Total CRITICAL + HIGH        : 182
+    CRITICAL                   : 35
+    HIGH                       : 147
+
+  FIXABLE  -> HARD BLOCKS      : 149
+  UNFIXED  -> WARNS ONLY       : 33
+
+WHY THIS SPLIT DECIDES THE POLICY
+----------------------------------------------------------------------
+  33 findings have NO fix available. Blocking on them would leave
+  this pipeline permanently red with no action that could turn it
+  green - so the gate would be disabled or bypassed within a week,
+  and every FIXABLE finding would then ship unnoticed too.
+
+  The blocking step therefore runs with --ignore-unfixed: the 149
+  fixable findings hard-block, the unfixed ones are reported loudly
+  and triaged out of band (reachability, compensating control,
+  named owner, review date, continuous re-scan).
+
+TOP AFFECTED PACKAGES
+----------------------------------------------------------------------
+  libexpat1                  26 findings
+  libssl1.1                  13 findings
+  openssl                    13 findings
+  libgnutls30                11 findings
+  perl-base                  11 findings
+  libc-bin                    7 findings
+  libc6                       7 findings
+  libgssapi-krb5-2            5 findings
+  libk5crypto3                5 findings
+  libkrb5-3                   5 findings
+
+SAMPLE OF UNFIXED FINDINGS (these WARN, never block)
+----------------------------------------------------------------------
+  HIGH      CVE-2022-3715        bash 5.1-2+b3
+  HIGH      CVE-2026-53615       bsdutils 1:2.36.1-8
+  HIGH      CVE-2026-41992       gzip 1.10-4
+  HIGH      CVE-2026-54369       libacl1 2.2.53-10
+  HIGH      CVE-2026-53615       libblkid1 2.36.1-8
+  CRITICAL  CVE-2019-8457        libdb5.3 5.3.28+dfsg1-0.8
+  HIGH      CVE-2025-59375       libexpat1 2.2.10-2
+  HIGH      CVE-2026-25210       libexpat1 2.2.10-2
+  HIGH      CVE-2026-45186       libexpat1 2.2.10-2
+  HIGH      CVE-2026-56131       libexpat1 2.2.10-2
+  HIGH      CVE-2026-56407       libexpat1 2.2.10-2
+  HIGH      CVE-2026-56408       libexpat1 2.2.10-2
+
+SAMPLE OF FIXABLE FINDINGS (these BLOCK)
+----------------------------------------------------------------------
+  CRITICAL  CVE-2022-1664        dpkg 1.20.9 -> 1.20.10
+  HIGH      CVE-2022-1304        e2fsprogs 1.46.2-2 -> 1.46.2-2+deb11u1
+  HIGH      CVE-2025-68973       gpgv 2.2.27-2 -> 2.2.27-2+deb11u3
+  HIGH      CVE-2022-1271        gzip 1.10-4 -> 1.10-4+deb11u1
+  CRITICAL  CVE-2021-33574       libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u3
+  CRITICAL  CVE-2022-23218       libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u3
+  CRITICAL  CVE-2022-23219       libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u3
+  HIGH      CVE-2021-3999        libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u4
+  HIGH      CVE-2023-4911        libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u7
+  HIGH      CVE-2024-2961        libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u9
+  HIGH      CVE-2024-33599       libc-bin 2.31-13+deb11u2 -> 2.31-13+deb11u10
+  CRITICAL  CVE-2021-33574       libc6 2.31-13+deb11u2 -> 2.31-13+deb11u3
+
+NOTE: most fixable findings are base-image OS packages. The image is
+built on python:3.6-slim, which is EOL. Moving to a supported base is
+the real remediation and would take this count close to zero; it is
+deferred because the pinned dependencies do not run on a modern
+interpreter and the vulnerable app code is Task 4's authorised target.

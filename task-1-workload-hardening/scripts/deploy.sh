@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Task 1 — end-to-end reproduction.
+# Task 1, end-to-end reproduction.
 #
 # Builds the hardened images, creates a local k3d cluster, installs the
 # Sealed Secrets and Kyverno controllers, and deploys the hardened workload.
@@ -29,15 +29,15 @@ need docker; need k3d; need kubectl; need kubeseal
 
 docker info >/dev/null 2>&1 || die "Docker daemon is not running."
 
-# ── Build context workaround ────────────────────────────────────────────────
+# Build context workaround
 # This repo may live under a OneDrive-synced path. OneDrive uses reparse
-# points that BuildKit cannot read through — it fails with
+# points that BuildKit cannot read through, it fails with
 # "invalid file request Dockerfile". Copying the build context to a plain
 # local temp dir sidesteps it. Harmless on non-OneDrive checkouts.
 BUILD_TMP="$(mktemp -d)"
 trap 'rm -rf "$BUILD_TMP"' EXIT
 
-# ── 1. Images ───────────────────────────────────────────────────────────────
+# 1. Images
 log "Building $LEDGER_IMAGE (hardened: multi-stage, non-root uid 10001)"
 mkdir -p "$BUILD_TMP/ledger"
 cp "$HERE/app-source/app/app.py" "$HERE/app-source/app/requirements.txt" "$BUILD_TMP/ledger/"
@@ -56,14 +56,14 @@ for img in "$LEDGER_IMAGE" "$REPORTING_IMAGE"; do
   printf '    %-22s uid=%s  OK\n' "$img" "$uid"
 done
 
-# ── 2. Cluster ──────────────────────────────────────────────────────────────
+# 2. Cluster
 if [ "${1:-}" = "--recreate" ]; then
   log "Deleting existing cluster"
   k3d cluster delete "$CLUSTER" >/dev/null 2>&1 || true
 fi
 
 if k3d cluster list 2>/dev/null | grep -q "^$CLUSTER "; then
-  log "Cluster '$CLUSTER' already exists — reusing"
+  log "Cluster '$CLUSTER' already exists, reusing"
 else
   # k3d (k3s) rather than kind: on a 4 GB Docker VM a kind node could not
   # reach systemd's multi-user target, while k3s boots reliably in ~2 min.
@@ -87,11 +87,11 @@ kubectl wait --for=condition=Ready node --all --timeout=180s >/dev/null
 log "Importing images into the cluster"
 k3d image import "$LEDGER_IMAGE" "$REPORTING_IMAGE" -c "$CLUSTER" >/dev/null
 
-# ── 3. Namespace (PSS restricted) ───────────────────────────────────────────
+# 3. Namespace (PSS restricted)
 log "Creating namespace with Pod Security Standards 'restricted'"
 kubectl apply -f "$HERE/manifests/base/00-namespace.yaml"
 
-# ── 4. Sealed Secrets ───────────────────────────────────────────────────────
+# 4. Sealed Secrets
 log "Installing Sealed Secrets controller ($SEALED_SECRETS_VERSION)"
 kubectl apply -f "https://github.com/bitnami-labs/sealed-secrets/releases/download/${SEALED_SECRETS_VERSION}/controller.yaml"
 kubectl -n kube-system rollout status deploy/sealed-secrets-controller --timeout=300s
@@ -105,7 +105,7 @@ if [ -f "$HERE/manifests/secrets/ledger-api-sealedsecret.yaml" ]; then
   kubectl apply -f "$HERE/manifests/secrets/ledger-api-sealedsecret.yaml"
   sleep 5
   if ! kubectl get secret ledger-api-secrets -n "$NS" >/dev/null 2>&1; then
-    warn "SealedSecret did not unseal — this cluster's controller key differs."
+    warn "SealedSecret did not unseal, this cluster's controller key differs."
     warn "Re-seal with: ./scripts/seal-secret.sh   then re-run this script."
     kubectl -n kube-system logs deploy/sealed-secrets-controller --tail=5 || true
     die "cannot continue without the Secret"
@@ -114,7 +114,7 @@ else
   die "No SealedSecret found. Run ./scripts/seal-secret.sh first."
 fi
 
-# ── 5. Kyverno ──────────────────────────────────────────────────────────────
+# 5. Kyverno
 log "Installing Kyverno ($KYVERNO_VERSION)"
 # --server-side is required: the Kyverno CRDs exceed the 262144-byte limit on
 # the kubectl.kubernetes.io/last-applied-configuration annotation that a
@@ -126,7 +126,7 @@ kubectl -n kyverno rollout status deploy/kyverno-admission-controller --timeout=
 log "Applying admission policies"
 kubectl apply -f "$HERE/manifests/policy/"
 
-# ── 6. Workloads ────────────────────────────────────────────────────────────
+# 6. Workloads
 log "Applying RBAC"
 kubectl apply -f "$HERE/manifests/rbac/"
 
@@ -140,13 +140,13 @@ kubectl -n "$NS" rollout status deploy/ledger-api --timeout=300s
 kubectl -n "$NS" rollout status deploy/reporting  --timeout=300s
 
 # Ingress last: it needs an ingress controller. traefik was disabled above, so
-# install ingress-nginx. Non-fatal if it cannot start on a small node — the
+# install ingress-nginx. Non-fatal if it cannot start on a small node, the
 # services are still reachable in-cluster.
 log "Installing ingress-nginx and applying Ingress"
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/cloud/deploy.yaml
 if kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=420s; then
 
-  # Security response headers are applied through the CONTROLLER's ConfigMap,
+  # Security response headers are applied through the CONTROLLER's ConfigMap.
   # not through a per-Ingress configuration-snippet annotation. ingress-nginx
   # v1.9+ rejects snippets by default, and that default is correct: a snippet
   # injects raw nginx directives from a namespaced object into the shared
@@ -163,7 +163,7 @@ if kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --tim
     -p '{"data":{"add-headers":"ingress-nginx/custom-headers"}}'
 
   # Self-signed TLS for the local host name. Generated at deploy time and never
-  # committed — a private key in git is the same class of mistake this task
+  # committed, a private key in git is the same class of mistake this task
   # exists to fix. Task 2/3 replace this with a real issuer / Istio gateway.
   CERT_TMP="$(mktemp -d)"
   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \

@@ -1,10 +1,10 @@
-# Kyverno — reject :latest and untagged images.
+# Kyverno, reject :latest and untagged images.
 #
 # Why this matters more than it looks: `:latest` is a mutable pointer. The bytes
 # running in production can change with no git commit, no PR and no audit
 # record, simply because someone pushed to the registry. That breaks change
-# control (PCI DSS 6.5), makes rollback unreliable — you cannot roll back to
-# "the previous latest" — and defeats signature verification, since you cannot
+# control (PCI DSS 6.5), makes rollback unreliable, you cannot roll back to
+# "the previous latest", and defeats signature verification, since you cannot
 # state which artifact you actually attested.
 #
 # It is also a supply-chain attack path: an attacker who gets one push to the

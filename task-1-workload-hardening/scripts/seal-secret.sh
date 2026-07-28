@@ -27,7 +27,7 @@ kubectl -n kube-system get deploy sealed-secrets-controller >/dev/null 2>&1 \
   || { echo "sealed-secrets controller not installed; run deploy.sh first" >&2; exit 1; }
 
 # Values come from the environment so real credentials are never written into
-# this file. The defaults are obvious placeholders — the leaked starter key is
+# this file. The defaults are obvious placeholders, the leaked starter key is
 # deliberately NOT reused. A credential that has been committed to git must be
 # rotated at the provider and treated as burned; re-encrypting the same value
 # just hides a key that is already public in the repository's history.
@@ -50,7 +50,7 @@ kubeseal --format yaml \
 
 echo "Sealed -> $OUT"
 echo
-echo "Sanity check — the plaintext values must NOT appear in the sealed file:"
+echo "Sanity check, the plaintext values must NOT appear in the sealed file:"
 if grep -qF "$STRIPE_API_KEY" "$OUT" 2>/dev/null; then
   echo "  FAIL: plaintext key found in output" >&2
   exit 1

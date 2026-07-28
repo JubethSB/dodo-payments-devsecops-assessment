@@ -1,4 +1,4 @@
-# ledger-api Service — ClusterIP only.
+# ledger-api Service, ClusterIP only.
 #
 # Deliberately NOT NodePort or LoadBalancer. ledger-api handles cardholder data;
 # the only path in from outside the cluster is through the Ingress (see

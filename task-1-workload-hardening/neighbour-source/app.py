@@ -1,10 +1,10 @@
-"""reporting — neighbour service for ledger-api.
+"""reporting, neighbour service for ledger-api.
 
 Fetches transaction records from ledger-api and serves an aggregated summary.
 
 Security note, and the reason this service exists in this shape:
 ledger-api's GET /transactions returns full PANs in cleartext. This service
-deliberately does NOT propagate them — it aggregates by currency/status and
+deliberately does NOT propagate them, it aggregates by currency/status and
 exposes only counts and totals. That is data minimisation: the reporting
 consumer has no business need for card numbers, so the PAN never leaves the
 service that already holds it. It also keeps `reporting` out of PCI CDE scope,
@@ -26,7 +26,7 @@ def health():
     """Liveness/readiness endpoint.
 
     Intentionally does NOT check ledger-api reachability. A dependency being
-    down must not make this pod fail its liveness probe and restart — that
+    down must not make this pod fail its liveness probe and restart, that
     turns one service's outage into a cascading restart storm across the
     namespace. Dependency health belongs in /ready-style business checks or
     metrics, not in the probe that decides whether to kill the process.

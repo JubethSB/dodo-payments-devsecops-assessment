@@ -2,7 +2,7 @@
 #
 # Design rule applied throughout this task:
 #   ConfigMap = non-sensitive config (URLs, timeouts, log level, feature flags)
-#   Secret    = credentials only (STRIPE_API_KEY, DB_PASSWORD) — sealed, see ../secrets/
+#   Secret    = credentials only (STRIPE_API_KEY, DB_PASSWORD), sealed, see ../secrets/
 #
 # The starter shipped credentials inline in the Deployment's env: block. That
 # is the single worst issue in the original manifest set, because it puts a
@@ -21,7 +21,7 @@ data:
   LOG_LEVEL: "info"
   APP_PORT: "8080"
   # Stop CPython writing .pyc files. Required because the container runs with
-  # a read-only root filesystem — without this the interpreter tries to write
+  # a read-only root filesystem, without this the interpreter tries to write
   # bytecode next to the source and logs errors on every import.
   PYTHONDONTWRITEBYTECODE: "1"
   # Unbuffered stdout so logs reach the container runtime immediately and are

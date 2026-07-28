@@ -1,4 +1,4 @@
-# Kyverno — the rest of the securityContext baseline.
+# Kyverno, the rest of the securityContext baseline.
 #
 # Covers the three controls Task 1 names alongside non-root: all capabilities
 # dropped, read-only root filesystem, and seccomp RuntimeDefault. Split into

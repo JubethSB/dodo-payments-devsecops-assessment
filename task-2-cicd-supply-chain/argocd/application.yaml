@@ -1,0 +1,93 @@
+# ArgoCD Application, ledger-api.
+#
+# This object is the whole GitOps contract: it names a git path as the desired
+# state and a cluster namespace as the place that state must hold. Everything
+# else, drift detection, self-heal, rollback, falls out of ArgoCD
+# continuously comparing those two.
+#
+# Why GitOps rather than `kubectl apply` from CI:
+#
+#   1. CI holds no cluster credentials. A push-based pipeline needs a kubeconfig
+#      with write access, which makes every runner a path into production. Here
+#      the pipeline's only privilege is committing to git; ArgoCD pulls. A
+#      compromised runner can propose a change, not make one.
+#   2. "What is deployed?" becomes a question about a commit rather than an
+#      interrogation of the cluster, which matters for PCI DSS 6.5 change
+#      control, where you must evidence what changed, when, and who approved it.
+#   3. Drift becomes detectable, because there is something authoritative to
+#      compare live state against. Without a declared source of truth, a manual
+#      `kubectl edit` is indistinguishable from intended configuration.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ledger-api
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/manifest-generate-paths: .
+  finalizers:
+    # Cascade deletion: removing the Application removes what it created.
+    # rather than orphaning resources that nothing then reconciles.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    # Set by scripts/bootstrap-argocd.sh to this repository's URL.
+    repoURL: https://github.com/REPLACE_ME/dodo-payments-devsecops-assessment.git
+    targetRevision: main
+    path: task-2-cicd-supply-chain/gitops
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: payments
+
+  syncPolicy:
+    automated:
+      # The two flags that make this self-healing
+      #
+      # prune: delete cluster resources that no longer exist in git. Without it.
+      # removing a manifest leaves the object running forever, a common way
+      # decommissioned workloads keep serving traffic long after everyone
+      # believes they are gone.
+      prune: true
+      #
+      # selfHeal: revert live state that diverges from git, without waiting for
+      # a new commit. This is what turns a manual `kubectl edit` into a
+      # temporary condition instead of a permanent undocumented change. It is
+      # the flag that makes the drift demo in the README possible.
+      selfHeal: true
+      allowEmpty: false
+
+    syncOptions:
+      - CreateNamespace=false     # Task 1 owns the namespace and its PSS labels
+      - PruneLast=true            # remove old objects only after new ones are healthy
+      - ApplyOutOfSyncOnly=true   # touch only what actually drifted
+      - RespectIgnoreDifferences=true
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  # Fields ArgoCD must NOT fight over
+  # Without these, ArgoCD and other controllers fight in a loop: the HPA scales.
+  # ArgoCD reverts, the HPA scales again. Each entry names a field owned by a
+  # controller rather than by git.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        # Owned by the HorizontalPodAutoscaler when one is attached.
+        - /spec/replicas
+    - group: ""
+      kind: Secret
+      name: ledger-api-secrets
+      # Written by the Sealed Secrets controller from the SealedSecret; the
+      # plaintext Secret is intentionally NOT in git, so ArgoCD must not treat
+      # its presence as drift.
+      jsonPointers:
+        - /data
+
+  revisionHistoryLimit: 10

@@ -20,13 +20,21 @@ kubeconfig
 .kube/
 *.log
 
+# Transient probe files written by verify-gates.sh while proving the secrets
+# gate can go red. They contain a deliberately fake token and are deleted on
+# exit, but the script can be interrupted mid-run, and a committed probe file
+# would be a real gitleaks finding in CI. Ignored so an interrupted run cannot
+# leave a landmine in the working tree.
+gate-probe*.yaml
+scan.json
+
 # OS/editor
 .DS_Store
 .vscode/
 node_modules/
 
-# Machine-local Claude Code permission grants. Not portable between machines,
-# and it accumulates verbatim copies of every command run — which can include
+# Machine-local Claude Code permission grants. Not portable between machines.
+# and it accumulates verbatim copies of every command run, which can include
 # credential strings from grep patterns. The shared .claude/settings.json is
 # committed; this per-machine override is not.
 .claude/settings.local.json

@@ -1,0 +1,78 @@
+# gitleaks configuration.
+#
+# Policy: a secret found anywhere is a hard build failure. Exceptions are
+# PATH-scoped only, never rule-disabling, and each is justified below.
+#
+# Two things learned while validating this file
+#
+# 1. Do not attach an allowlist by re-declaring a built-in rule. An earlier
+#    revision wrote:
+#        [[rules]]
+#        id = "generic-api-key"
+#        [rules.allowlist]
+#        paths = [ ... ]
+#    A `[[rules]]` entry DEFINES a rule, so declaring an existing id with no
+#    `regex` replaces the built-in with an empty one. Every exception belongs
+#    in the single top-level [allowlist] instead, leaving built-in rules intact.
+#
+# 2. Validate a secrets gate with a token the scanner actually detects.
+#    An initial negative test planted `sk_live_51NqPzY...` and
+#    `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY` and reported "no leaks found".
+#    which looked like a broken config. It was not: those are well-known
+#    documentation/example values that gitleaks ignores by design. A real
+#    `ghp_...` token is detected immediately.
+#
+#    The general lesson, and the reason scripts/verify-gates.sh runs a negative
+#    test on every CI run: a secrets scanner that reports nothing looks
+#    identical whether it is working perfectly or switched off entirely. Green
+#    is only meaningful if you have proven the gate can go red.
+
+[extend]
+# Start from the maintained default ruleset rather than hand-rolling regexes.
+useDefault = true
+
+[allowlist]
+description = "Insecure baseline, generated evidence, and encrypted-by-design artifacts"
+paths = [
+  # 1. The assignment's starter service
+  # app-source/deploy/deployment.yaml carries a plaintext `sk_live_...` key and
+  # a database password. Both are FAKE assignment values, retained on purpose:
+  #   a) Task 1 applies this exact manifest to demonstrate the admission
+  #      guardrails rejecting it, redacting it would delete the evidence;
+  #   b) Task 4 pen-tests this application, and exposed secrets are in scope.
+  #
+  # Scoped to the single file, not the directory, not the rule. The same
+  # string committed anywhere else still fails the build.
+  '''task-1-workload-hardening/app-source/deploy/deployment\.yaml$'''.
+  # 2. Generated evidence transcripts
+  # These capture tool output verbatim, which reproduces the fake key from the
+  # admission rejection messages. Generated artifacts, not source.
+  '''task-1-workload-hardening/evidence/[^/]+\.txt$''',
+  '''task-2-cicd-supply-chain/evidence/[^/]+\.(txt|json)$'''.
+  # 3. SealedSecret manifests
+  # Entropy detection flags these (measured 5.95 on ours) because an
+  # encryptedData blob is by construction indistinguishable from a high-entropy
+  # credential. It is not one: it is ciphertext only the in-cluster controller's
+  # private key can open, which is the entire reason the pattern is safe to
+  # commit publicly.
+  #
+  # Allowlisting the path is the right lever, lowering the global entropy
+  # threshold to silence it would blind the scanner everywhere else.
+  #
+  # DELIBERATELY NARROW. The obvious pattern `.*sealedsecret.*\.yaml` was
+  # rejected after testing showed it suppresses a real `ghp_` token in any file
+  # merely NAMED that way, anywhere in the repo, a trivial bypass for anyone
+  # who reads this config. These patterns are anchored to the specific
+  # manifests/secrets/ directories where sealed secrets legitimately live, so
+  # the bypass requires write access to a reviewed path rather than the ability
+  # to choose a filename.
+  #
+  # Residual risk, accepted: someone with commit access to
+  # */manifests/secrets/ could still hide a plaintext secret in a file named
+  # *sealedsecret.yaml. Mitigations are code review on that path and the
+  # SealedSecret schema check in scripts/verify-gates.sh, which asserts the
+  # file really is `kind: SealedSecret` with an encryptedData block and no
+  # stringData/data key.
+  '''task-\d-[a-z-]+/manifests/secrets/[^/]*sealed-?secret[^/]*\.ya?ml$''',
+  '''task-\d-[a-z-]+/gitops/[^/]*sealed-?secret[^/]*\.ya?ml$''',
+]

@@ -1,4 +1,4 @@
-# Kyverno — reject containers that run as root.
+# Kyverno, reject containers that run as root.
 #
 # Why this exists alongside Pod Security Standards `restricted` (which already
 # requires runAsNonRoot): PSS is all-or-nothing per namespace and gives a
@@ -8,7 +8,7 @@
 #
 # The layers fail differently, which is the point. PSS is compiled into the API
 # server and keeps working if Kyverno is uninstalled or its webhook is deleted;
-# Kyverno covers rules PSS cannot express (registry allow-lists, image tags,
+# Kyverno covers rules PSS cannot express (registry allow-lists, image tags.
 # signature verification). Removing either one still leaves a control standing.
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -26,7 +26,7 @@ metadata:
 spec:
   # Enforce = reject at admission. The alternative, Audit, only records the
   # violation; for a PCI-scoped namespace a control that merely observes is not
-  # a control. Deployed as Enforce from the start rather than soft-launched,
+  # a control. Deployed as Enforce from the start rather than soft-launched.
   # because this is a greenfield namespace with no legacy workloads to break.
   validationFailureAction: Enforce
   background: true
@@ -46,7 +46,7 @@ spec:
           or container level.
         pattern:
           spec:
-            # =(field) means "if this field exists, it must match" — it lets a
+            # =(field) means "if this field exists, it must match", it lets a
             # pod satisfy the rule at pod level OR at container level without
             # forcing both to be present.
             =(securityContext):

@@ -7,12 +7,12 @@
 # executable removes a whole class of "works on my machine" bug reports.
 * text=auto eol=lf
 
-# Must be LF — executed by a shell.
+# Must be LF, executed by a shell.
 *.sh            text eol=lf
 Dockerfile      text eol=lf
 *.Dockerfile    text eol=lf
 
-# Must be LF — parsed by Kubernetes / CI tooling.
+# Must be LF, parsed by Kubernetes / CI tooling.
 *.yaml          text eol=lf
 *.yml           text eol=lf
 *.py            text eol=lf

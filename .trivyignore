@@ -1,0 +1,30 @@
+# Trivy suppressions.
+#
+# RULES FOR THIS FILE, read before adding anything:
+#
+#   1. Every entry needs a reason, an owner and an expiry date. An undated
+#      suppression is permanent by accident, and permanent suppressions are how
+#      scanners quietly stop finding things.
+#   2. Suppress only what you have actually triaged. "It is noisy" is not
+#      triage.
+#   3. Prefer fixing. A suppression is a decision to accept risk, and someone
+#      has to own that decision by name.
+#
+# NOTE ON THE BIG ONE: this project's base image (python:3.6-slim) is EOL and
+# its dependencies are from 2018, so the scanners WILL report criticals. Those
+# are deliberately NOT suppressed here.
+#
+# They cannot be fixed without rewriting the application, because Flask 0.12.2
+# and PyYAML 5.1 do not run on a modern interpreter, and the vulnerable app
+# code is the authorised target for Task 4. Suppressing them would hide the
+# single most important finding in the repository.
+#
+# Instead they are handled by the fail policy itself: the blocking step runs
+# with --ignore-unfixed, so unfixable findings are reported loudly but do not
+# wedge the pipeline, while anything with an available fix hard-blocks. See
+# task-2-cicd-supply-chain/README.md for the full rationale and the
+# compensating controls from Task 1 that reduce their exploitability.
+#
+# Format: one CVE per line, optionally `CVE-ID exp:YYYY-MM-DD`.
+#
+# (No active suppressions.)

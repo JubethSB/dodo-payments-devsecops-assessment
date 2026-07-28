@@ -1,4 +1,4 @@
-# kind cluster for Task 1 — ledger-api workload hardening
+# kind cluster for Task 1, ledger-api workload hardening
 #
 # Single control-plane node. NOTE: this Docker Desktop VM has only ~3.7 GB RAM;
 # a two-node cluster starved each node's systemd and failed to reach the
@@ -6,7 +6,7 @@
 # System"). One node boots reliably and is sufficient for the hardening work.
 #
 # The node is labelled ingress-ready and maps host :8080->80 / :8443->443 so an
-# ingress-nginx controller can serve the Ingress object the task requires,
+# ingress-nginx controller can serve the Ingress object the task requires.
 # with no cloud LoadBalancer.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4

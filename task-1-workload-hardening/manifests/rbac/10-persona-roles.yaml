@@ -1,27 +1,25 @@
-# Bonus — RBAC for the developer / operator / admin personas.
+# Bonus, RBAC for the developer / operator / admin personas.
 #
 # These are HUMAN roles, distinct from the workload ServiceAccounts in
 # 00-workload-serviceaccounts.yaml. The design principle throughout: each
-# persona gets the narrowest set of verbs that lets them do their actual job,
+# persona gets the narrowest set of verbs that lets them do their actual job.
 # and nobody gets a verb "just in case".
 #
 # The single most important decision here concerns Secrets. In a PCI-scoped
 # namespace, `get secrets` is equivalent to reading the Stripe live key and the
-# database password — sealing them in git is pointless if any developer can
-# simply read the decrypted Secret out of the cluster. So NO persona below,
+# database password, sealing them in git is pointless if any developer can
+# simply read the decrypted Secret out of the cluster. So NO persona below.
 # including admin, is granted get/list/watch on Secrets. Break-glass access is
 # a deliberate, audited action performed by a cluster-admin, not a standing
 # grant attached to a day-to-day role.
 #
 # Second decision: `pods/exec` is treated as a privileged verb, not a debugging
 # convenience. A shell inside a pod runs with that pod's identity and can read
-# every mounted Secret and env var — it bypasses the Secret RBAC above
+# every mounted Secret and env var, it bypasses the Secret RBAC above
 # entirely. Developers therefore get logs, never exec.
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DEVELOPER — read-mostly. Can observe and diagnose, cannot change running
+# DEVELOPER, read-mostly. Can observe and diagnose, cannot change running
 # state and cannot read credentials.
-# ─────────────────────────────────────────────────────────────────────────────
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -58,13 +56,11 @@ rules:
   # NOTE the absences, all deliberate:
   #   - secrets            : credential disclosure
   #   - pods/exec, portforward : shell access bypasses every Secret restriction
-  #   - create/update/delete   : production change goes through GitOps (Task 2),
+  #   - create/update/delete   : production change goes through GitOps (Task 2).
   #                              not through a human's kubectl
 
 ---
-# ─────────────────────────────────────────────────────────────────────────────
-# OPERATOR — on-call. Can act to restore service, still cannot read credentials.
-# ─────────────────────────────────────────────────────────────────────────────
+# OPERATOR, on-call. Can act to restore service, still cannot read credentials.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -101,14 +97,12 @@ rules:
   - apiGroups: [wgpolicyk8s.io]
     resources: [policyreports, clusterpolicyreports]
     verbs: [get, list, watch]
-  # Still no secrets, and still no exec — an on-call engineer restores service
+  # Still no secrets, and still no exec, an on-call engineer restores service
   # by restarting and rolling back, not by shelling into a PCI workload.
 
 ---
-# ─────────────────────────────────────────────────────────────────────────────
-# ADMIN — namespace owner. Full lifecycle over workloads, explicitly NOT over
+# ADMIN, namespace owner. Full lifecycle over workloads, explicitly NOT over
 # credentials.
-# ─────────────────────────────────────────────────────────────────────────────
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -134,8 +128,8 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [ingresses, networkpolicies]
     verbs: [get, list, watch, create, update, patch, delete]
-  # Manage SealedSecrets — the CIPHERTEXT resource. An admin can rotate and
-  # deploy a sealed credential without ever being able to read the plaintext,
+  # Manage SealedSecrets, the CIPHERTEXT resource. An admin can rotate and
+  # deploy a sealed credential without ever being able to read the plaintext.
   # which is precisely the property Sealed Secrets buys us.
   - apiGroups: [bitnami.com]
     resources: [sealedsecrets]
@@ -151,14 +145,12 @@ rules:
     resources: [policyreports, clusterpolicyreports]
     verbs: [get, list, watch]
   # DELIBERATELY ABSENT even at admin level:
-  #   - core "secrets" get/list/watch — see the header note. Admins manage
+  #   - core "secrets" get/list/watch, see the header note. Admins manage
   #     SealedSecrets (encrypted) and let the controller do the decryption.
-  #   - pods/exec and pods/attach — see below for the audited break-glass role.
+  #   - pods/exec and pods/attach, see below for the audited break-glass role.
 
 ---
-# ─────────────────────────────────────────────────────────────────────────────
-# BREAK-GLASS — exec into a PCI workload. Not bound to anyone by default.
-# ─────────────────────────────────────────────────────────────────────────────
+# BREAK-GLASS, exec into a PCI workload. Not bound to anyone by default.
 # Separated into its own Role so that granting it is a discrete, reviewable
 # event with a start and an end, rather than a permission quietly inherited by
 # every admin forever. The expected workflow is: incident declared -> a
@@ -183,10 +175,8 @@ rules:
     verbs: [create, get]
 
 ---
-# ─────────────────────────────────────────────────────────────────────────────
 # Bindings. Groups, not individual users: membership is managed in the identity
 # provider, so onboarding and offboarding never require a cluster change.
-# ─────────────────────────────────────────────────────────────────────────────
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -228,4 +218,4 @@ roleRef:
   kind: Role
   name: payments-admin
   apiGroup: rbac.authorization.k8s.io
-# No RoleBinding for payments-breakglass-exec — created on demand only.
+# No RoleBinding for payments-breakglass-exec, created on demand only.

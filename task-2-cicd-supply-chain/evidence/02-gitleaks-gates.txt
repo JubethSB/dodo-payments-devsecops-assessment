@@ -1,0 +1,29 @@
+======================================================================
+ EVIDENCE: Secrets gate (gitleaks) — including NEGATIVE tests
+ Generated: 2026-07-28T16:50:21Z
+======================================================================
+
+A secrets scanner that reports nothing looks identical whether it is
+working perfectly or switched off entirely. These three tests exist so
+that a green result actually means something.
+
+--- TEST 1 (positive): committed repo scans clean ---
+[90m4:50PM[0m [32mINF[0m [1mno leaks found[0m
+
+--- TEST 2 (negative): planted token in an ordinary file MUST be caught ---
+[90m4:51PM[0m [33mWRN[0m [1mleaks found: 1[0m
+  EXPECTED: leaks found (the gate goes red)
+
+--- TEST 3 (negative): allowlist must not be bypassable by filename ---
+[90m4:52PM[0m [33mWRN[0m [1mleaks found: 1[0m
+  EXPECTED: leaks found — the SealedSecret allowlist is scoped to
+  */manifests/secrets/ and */gitops/, not to any file merely NAMED
+  'sealedsecret'. An earlier, broader pattern WAS bypassable this way.
+
+--- Allowlisted paths and their justification ---
+  1. app-source/deploy/deployment.yaml — assignment starter, retained as
+     the insecure baseline Task 1 rejects and Task 4 pen-tests.
+  2. evidence/*.txt — generated transcripts that quote the fake key.
+  3. */manifests/secrets/*sealedsecret*.yaml — RSA-OAEP ciphertext;
+     flagged only because entropy 5.95 is indistinguishable from a
+     credential. Safe by construction, and schema-checked separately.

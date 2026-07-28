@@ -1,7 +1,7 @@
-# reporting — the neighbour service required by Task 1.
+# reporting, the neighbour service required by Task 1.
 #
 # The starter shipped a `reporting` pod that was just `curlimages/curl` running
-# `sleep infinity` — a shell with no Service, no config and no purpose other
+# `sleep infinity`, a shell with no Service, no config and no purpose other
 # than to be a pivot point. It is replaced here with a real service that has a
 # Deployment, Service and ConfigMap, and receives the same hardening as
 # ledger-api. The bare curl client returns in Task 3 as the *unauthorised*
@@ -79,7 +79,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: reporting-config
-          # No Secret here — reporting holds no credentials. Every secret a
+          # No Secret here, reporting holds no credentials. Every secret a
           # workload does not carry is one an attacker cannot steal from it.
           resources:
             requests:

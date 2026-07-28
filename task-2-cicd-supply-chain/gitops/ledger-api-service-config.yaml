@@ -1,0 +1,53 @@
+# Supporting objects for the ledger-api Deployment, synced by ArgoCD.
+#
+# Scope of this GitOps directory, and what is deliberately outside it:
+#
+#   IN, ConfigMap, Service, Deployment. These change with the application and
+#         should move through the pipeline on every release.
+#
+#   OUT, Namespace (with its Pod Security Standards labels), ServiceAccount.
+#         RBAC, SealedSecret, and the Kyverno policies. Those are platform
+#         concerns owned by Task 1 and applied out of band.
+#
+# The split is intentional. If the application's own pipeline could rewrite the
+# namespace's PSS labels or its RBAC, then compromising the pipeline would be
+# enough to disable the guardrails that constrain what the pipeline can deploy.
+# the control and the thing it controls must not share an owner. ArgoCD's
+# ignoreDifferences and CreateNamespace=false in application.yaml enforce that
+# boundary.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ledger-api-config
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/managed-by: argocd
+data:
+  LOG_LEVEL: "info"
+  APP_PORT: "8080"
+  # Required, not cosmetic: the container runs with a read-only root
+  # filesystem, so an interpreter writing .pyc files next to the source errors
+  # on every import.
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/managed-by: argocd
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ledger-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

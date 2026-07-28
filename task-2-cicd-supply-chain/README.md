@@ -1,25 +1,305 @@
-# Task 2 — Secure CI/CD Pipeline & Supply Chain
+# Task 2: Secure CI/CD Pipeline & Supply Chain
 
-## 1. Approach & design decisions
-_TODO_
+Rebuilds the delivery path so the pipeline enforces security instead of relying
+on people remembering to. Four gates, keyless signing, SLSA-style provenance,
+and GitOps with drift detection.
 
-## 2. Architecture diagram
-_TODO_
+Pipeline: [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml)
 
-## 3. Prerequisites
-_TODO_
+**Status: built and locally validated, but not yet executed.** There's no
+GitHub remote on this repo yet, so the workflow has never run. See the last
+section.
 
-## 4. Step-by-step reproduction
-_TODO_
+## Pipeline shape
 
-## 5. Verification
-_TODO_
+```
+  secrets-scan --+
+  sast           +--> build --> image-scan --> sign-and-attest --> update-gitops
+  deps-scan     -+                                                       |
+                                                                         v
+                                                            ArgoCD reconciles
+                                                              git -> cluster
+```
 
-## 6. Evidence
-_TODO — link screenshots/recordings from ./screenshots/_
+Two ordering choices matter.
 
-## 7. Bonus items completed
-_TODO_
+The three source-level gates run first and in parallel. None of them needs an
+image, so a broken commit fails in about a minute instead of after a multi-minute
+container build. Short feedback loops are what keep people actually reading the
+output rather than tuning it out.
 
-## 8. Known limitations / what I'd do with more time
-_TODO_
+Signing runs after the image scan, never before. A signature says "this came
+from this workflow". Signing something unscanned would attest provenance for a
+container nobody has looked at, which is worse than not signing, because it
+creates confidence that isn't backed by anything.
+
+## Fail policies
+
+| Gate | Tool | Blocks | Warns |
+|---|---|---|---|
+| Secrets | gitleaks | Any finding | none |
+| SAST | Semgrep | `ERROR` | `WARNING`, `INFO` |
+| Dependencies | Trivy (fs) | CRITICAL/HIGH with a fix | Unfixed, MEDIUM/LOW |
+| Image | Trivy (image) | CRITICAL/HIGH with a fix | Unfixed, MEDIUM/LOW |
+| Signature | Kyverno (Task 1) | Unsigned images | none |
+
+**Secrets are the one gate with no warn mode.** A pushed credential is
+exploitable immediately and can't be un-published. Forks, clones and GitHub's
+event feed all have it within seconds. There's no "fix it next sprint" for a
+live key.
+
+**SAST blocks on ERROR only.** Those are high-confidence, concretely
+exploitable patterns, and this codebase produces two of them (the `yaml.load`
+sink and the unvalidated `requests.get`). WARNING has a real false-positive
+rate, and blocking on it just teaches people to bypass the gate, which is worse
+than not having it.
+
+### Handling a CVE with no fix
+
+This is the interesting one. **Block on fixable CRITICAL/HIGH, warn on unfixed.**
+
+Blocking on an unfixed CVE doesn't make anyone safer. There's no patch to
+apply, so the only ways back to green are suppressing the finding or not
+deploying. Teams under delivery pressure pick suppression, and then the gate is
+blind permanently. It also blocks you from shipping fixes for *other*
+vulnerabilities, so the net effect is negative.
+
+I measured this on the actual image:
+
+| | Count |
+|---|---|
+| Total CRITICAL + HIGH | 182 |
+| Fixable, so blocks | 149 |
+| Unfixed, so warns | 33 |
+
+Those 33 have no fix available anywhere. A block-everything policy leaves this
+pipeline permanently red with no action that turns it green, and the gate gets
+switched off within a week, at which point the 149 fixable ones start shipping
+too.
+
+Unfixed findings don't get ignored, they get triaged outside the pipeline:
+check whether the vulnerable path is actually reachable, apply a compensating
+control (Task 1's hardening, Task 3's mesh policy), record it against a named
+owner with a review date, and keep scanning so it starts blocking the day a fix
+lands.
+
+`.trivyignore` has no active suppressions. The EOL base image findings are
+deliberately not suppressed, hiding the most significant finding in the repo
+to earn a green check would defeat the point of having a scanner.
+
+## Signing and provenance
+
+Cosign keyless, so there's no long-lived signing key to leak:
+
+1. The job asks GitHub for a short-lived OIDC token describing the workflow.
+2. Cosign trades it with Fulcio for an ephemeral certificate carrying that
+   identity, signs the digest, and logs the entry to Rekor.
+3. The private key exists for about ten minutes and is never written down.
+
+It's worth being precise about what a signature does and doesn't claim. It says
+the artifact was produced by this workflow from this repo. It says nothing
+about whether the image has CVEs. Those are separate questions, which is why
+the scan gate exists on its own and runs first.
+
+Verification pins identity, not just "signed". Checking that *somebody* signed
+an image is useless, since anyone can get a Fulcio certificate. Both the
+pipeline and Task 1's Kyverno policy pin the workflow identity and the OIDC
+issuer:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp "^https://github.com/<owner>/<repo>/\.github/workflows/.+@refs/heads/main$" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/<owner>/ledger-api@sha256:<digest>
+```
+
+Provenance comes from two places: BuildKit's own `provenance: mode=max` and
+`sbom: true` attestations attached at push, plus a Syft SPDX SBOM attached as a
+signed `cosign attest` predicate.
+
+## GitOps
+
+The pipeline never runs `kubectl apply`. It commits a digest to git and stops.
+ArgoCD pulls.
+
+The security argument is the main one. A push-based pipeline needs a kubeconfig
+with write access, which makes every runner a path into production. Here the
+pipeline's only privilege is committing to git, so a compromised runner can
+propose a change but not make one.
+
+Two other things fall out of it. "What's deployed?" becomes a question you
+answer by reading a commit rather than interrogating the cluster, which is what
+PCI DSS 6.5 change control actually needs. And drift becomes detectable,
+because there's finally something authoritative to compare live state against.
+
+Images are pinned by digest, never tag. The digest is the exact artifact that
+passed the scan and carries the signature. A tag can be repointed afterwards,
+which invalidates both.
+
+One boundary worth calling out: the GitOps directory holds the ConfigMap,
+Service and Deployment only. Namespace, RBAC, SealedSecret and the Kyverno
+policies stay with Task 1. If the application pipeline could rewrite the
+namespace's PSS labels, then compromising the pipeline would be enough to
+disable the guardrails that constrain it. The control and the thing it controls
+shouldn't share an owner.
+
+## Architecture
+
+```
+   developer push
+        |
+        v
+   +------------------------ GitHub Actions ------------------------+
+   |  gitleaks        Semgrep         Trivy fs                      |
+   |  (any -> block)  (ERROR -> block) (fixable -> block)           |
+   |        +--------------+--------------+                         |
+   |                       v                                        |
+   |              docker buildx build                               |
+   |              + SBOM + provenance                               |
+   |                       v                                        |
+   |              Trivy image scan --> GHCR                         |
+   |                       v                                        |
+   |         cosign sign (keyless, OIDC)                            |
+   |           +--> Fulcio  (ephemeral cert)                        |
+   |           +--> Rekor   (transparency log)                      |
+   |                       v                                        |
+   |         cosign attest (Syft SPDX SBOM)                         |
+   |                       v                                        |
+   |         commit digest -> gitops/                               |
+   +-----------------------+----------------------------------------+
+                           |  no cluster credentials cross this line
+                           v
+                   +--------------+   watches git
+                   |    ArgoCD    |----------------> reconcile
+                   +------+-------+   prune + selfHeal
+                          v
+                 +--------------------+
+                 | namespace payments |  Kyverno verifies the cosign
+                 |  ledger-api        |  signature at admission
+                 +--------------------+
+```
+
+## Prerequisites
+
+Docker, kubectl, a public GitHub repo (needed for Actions, GHCR and the OIDC
+that makes keyless signing work), and the Task 1 cluster already up so the
+`payments` namespace, ServiceAccount and SealedSecret exist.
+
+No cloud account, no paid runners, no signing keys to manage.
+
+## Running it
+
+```bash
+# Validate the gates locally, using the same container images CI uses
+./task-2-cicd-supply-chain/scripts/verify-gates.sh
+
+# Push, which is what triggers the pipeline
+git remote add origin https://github.com/<you>/<repo>.git
+git push -u origin main
+
+# GitOps
+./task-2-cicd-supply-chain/scripts/bootstrap-argocd.sh https://github.com/<you>/<repo>.git
+./task-2-cicd-supply-chain/scripts/demo-drift.sh
+```
+
+## Verification
+
+`verify-gates.sh` runs the scanners and, more importantly, proves they can
+fail:
+
+| Check | What it asserts |
+|---|---|
+| Clean tree scans clean | No false positives on the committed repo |
+| Negative: planted token in an ordinary file | The gate goes red |
+| Negative: `sealedsecret`-named file outside `manifests/secrets/` | The allowlist isn't bypassable by filename |
+| SealedSecret schema | Allowlisted files really are ciphertext-only |
+| Trivy fixable vs unfixed differ | `--ignore-unfixed` is doing real work |
+
+## Evidence
+
+| File | What it shows |
+|---|---|
+| `evidence/01-trivy-image-scan.txt` | 182 CVEs, the 149/33 split behind the fail policy |
+| `evidence/02-gitleaks-gates.txt` | Secrets gate passing clean, plus negative tests proving it can fail |
+
+`evidence/05-argocd-drift-selfheal.txt` gets written by `demo-drift.sh` once
+ArgoCD is bootstrapped. Pipeline run links, `cosign verify` output and SARIF
+screenshots come after the first push.
+
+## Bonus items
+
+- **SARIF upload.** Semgrep, Trivy fs and Trivy image each upload under their
+  own category, so findings land in the repo's Security tab with inline
+  annotations instead of sitting in job logs nobody opens.
+- **`cosign verify` inside the pipeline.** The workflow verifies its own
+  signature and the SBOM attestation and publishes the output as a build
+  artifact, so the proof is produced by the run rather than asserted later.
+- **Non-root assertion in CI.** The build job runs `id -u` inside the image it
+  just built and fails on uid 0. Without it a regression would surface much
+  later as a confusing admission rejection from Task 1's policies.
+
+Canary/blue-green isn't done, see below.
+
+## What's not finished
+
+The workflow, ArgoCD manifests and gate configs are written, the YAML is
+validated, and the scanners are verified locally against the real image. But
+the pipeline itself has never run, because there's no remote configured. Once
+pushed it produces the Actions run links, `cosign verify` output, SARIF in the
+Security tab and a GHCR package. Nothing else needs changing.
+
+| # | Gap | Notes |
+|---|---|---|
+| 1 | Pipeline not executed | Needs a public GitHub repo |
+| 2 | Kyverno signature policy still `Audit` | Flips to `Enforce` with `mutateDigest: true` once GHCR has signed images |
+| 3 | `gitops/` references `ghcr.io/REPLACE_ME/` | Substituted by `bootstrap-argocd.sh`, then rewritten to a real digest by the first run |
+| 4 | Manifests duplicated between Task 1 and `gitops/` | Kustomize overlays would fix it; plain manifests keep the ArgoCD demo readable |
+| 5 | No canary or blue-green | Argo Rollouts is the natural fit. I'd rather do it alongside Task 3's `VirtualService` traffic splitting, where the mesh handles the weighting |
+| 6 | Base image still EOL | Deliberate, see Task 1. Most of the 149 fixable CVEs are base-image packages, so a supported base would take that close to zero |
+| 7 | No branch protection | The gates only really bind if `main` requires them to pass. Worth a ruleset requiring all four checks plus review |
+
+## Bugs I hit while validating this
+
+I'm listing these because they're the reason `verify-gates.sh` runs negative
+tests at all. Every one of them produced a plausible-looking green result, and
+none would have been caught by reading the code.
+
+The general problem: a secrets scanner that reports nothing looks exactly the
+same whether it's working perfectly or completely switched off. Green only
+means something once you've proven the thing can go red.
+
+1. **A malformed allowlist silently disabled a rule.** I tried to attach an
+   allowlist by re-declaring the built-in `generic-api-key` rule. A `[[rules]]`
+   entry *defines* a rule, so declaring an existing id with no `regex` replaces
+   the built-in with an empty one. Exceptions now go in the single top-level
+   `[allowlist]`.
+
+2. **The test fixture failed its own gate.** My first `verify-gates.sh` had the
+   probe token as a literal, so our own scan flagged the test script twice. It's
+   assembled at runtime now.
+
+3. **`set -o pipefail` inverted the negative tests.** This looks fine:
+
+   ```bash
+   if gitleaks_scan | grep -q "leaks found"; then ok; else fail; fi
+   ```
+
+   gitleaks exits 1 when it finds leaks. Under `pipefail` the pipeline takes
+   that 1 instead of grep's 0, so a successfully detected leak was reported as a
+   failed test. Capturing to a variable first fixes it, because command
+   substitution in an assignment doesn't propagate exit status. Any scanner
+   that signals findings through its exit code has this trap.
+
+4. **Path allowlists anchored at the wrong end.** `^task-1-...` never matched,
+   because gitleaks reports paths prefixed with the scan root (`/repo/...`).
+   Anchor at the end instead.
+
+5. **A Unix path handed to Windows Python.** With `MSYS_NO_PATHCONV=1` set so
+   Git Bash stops rewriting container paths, a `/tmp/...` path reaches Windows
+   Python verbatim and can't be resolved, so the Trivy count silently produced
+   nothing.
+
+6. **Two concurrent Trivy scans starved the cluster.** Running the scan twice,
+   once with `--ignore-unfixed`, exhausted the 3.7 GB Docker VM and made the k3d
+   API server unreachable mid-run. One scan gives both numbers anyway, since
+   "fixable" just means "has a FixedVersion".

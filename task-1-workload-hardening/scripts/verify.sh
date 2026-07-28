@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Task 1 — verification. Proves each control is actually in force at runtime
+# Task 1, verification. Proves each control is actually in force at runtime
 # rather than merely declared in YAML, and writes the transcript to evidence/.
 #
 #   ./scripts/verify.sh

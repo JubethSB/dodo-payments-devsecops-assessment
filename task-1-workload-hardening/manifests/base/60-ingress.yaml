@@ -1,7 +1,7 @@
 # Ingress for ledger-api.
 #
 # Single controlled entry point into the namespace. reporting is deliberately
-# NOT exposed — it is an internal consumer, reachable only via ClusterIP inside
+# NOT exposed, it is an internal consumer, reachable only via ClusterIP inside
 # the cluster. Every service you do not publish is attack surface you do not
 # have to defend.
 apiVersion: networking.k8s.io/v1
@@ -14,7 +14,7 @@ metadata:
     app.kubernetes.io/part-of: payments-platform
   annotations:
     # Force TLS. ledger-api carries cardholder data, so cleartext transport is
-    # not acceptable even inside a lab — PCI DSS 4.x requires strong
+    # not acceptable even inside a lab, PCI DSS 4.x requires strong
     # cryptography for PAN in transit over open networks.
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
@@ -22,7 +22,7 @@ metadata:
     # body size limits how much an attacker can push through that sink.
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
     #
-    # SECURITY HEADERS — deliberately NOT set with a configuration-snippet.
+    # SECURITY HEADERS, deliberately NOT set with a configuration-snippet.
     #
     # The obvious way to add X-Content-Type-Options / X-Frame-Options here is
     # nginx.ingress.kubernetes.io/configuration-snippet. ingress-nginx v1.9+
@@ -34,7 +34,7 @@ metadata:
     # CVE-2021-25742 and CVE-2023-5044.
     #
     # Re-enabling snippets to add three response headers would trade a real
-    # cross-tenant privilege-escalation path for a cosmetic hardening win — the
+    # cross-tenant privilege-escalation path for a cosmetic hardening win, the
     # wrong trade. The headers are instead applied cluster-wide by the ingress
     # controller's own ConfigMap, which only a cluster administrator can edit:
     #

@@ -1,4 +1,4 @@
-# ledger-api — hardened Deployment.
+# ledger-api, hardened Deployment.
 #
 # This is the security-critical artifact of Task 1. Every field below that
 # differs from the starter (app-source/deploy/deployment.yaml) is there to
@@ -16,7 +16,7 @@ spec:
   replicas: 2
   # Keep capacity during rollouts. maxUnavailable:0 means a new pod must go
   # Ready before an old one is removed, so a bad image cannot empty the
-  # Deployment — the rollout stalls instead of taking the service down.
+  # Deployment, the rollout stalls instead of taking the service down.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -35,11 +35,11 @@ spec:
       # FIX: starter used the namespace `default` ServiceAccount.
       serviceAccountName: ledger-api
       # FIX: no API token is projected into the pod. ledger-api never calls the
-      # Kubernetes API, so a mounted token is pure attack surface — it is the
+      # Kubernetes API, so a mounted token is pure attack surface, it is the
       # first thing an attacker reads at /var/run/secrets/... after RCE.
       automountServiceAccountToken: false
 
-      # ── Pod-level security context ──────────────────────────────────────
+      # Pod-level security context
       securityContext:
         # FIX: starter ran as root (the image has no USER directive).
         runAsNonRoot: true
@@ -47,7 +47,7 @@ spec:
         runAsGroup: 10001
         # Owns mounted volumes so the non-root UID can write to /tmp.
         fsGroup: 10001
-        # FIX: seccomp RuntimeDefault — blocks the ~300 syscalls the container
+        # FIX: seccomp RuntimeDefault, blocks the ~300 syscalls the container
         # runtime deems unnecessary (keyctl, ptrace, mount, kexec_load...).
         # Without this the container runs seccomp-unconfined and a kernel-level
         # container escape has the full syscall table to work with.
@@ -57,8 +57,8 @@ spec:
       containers:
         - name: ledger-api
           # Pinned tag, never :latest. Kyverno enforces this cluster-wide
-          # (../policy/disallow-latest-tag.yaml) — a mutable tag means the
-          # bytes running in production can change without any git commit,
+          # (../policy/disallow-latest-tag.yaml), a mutable tag means the
+          # bytes running in production can change without any git commit.
           # which breaks both change control and PCI DSS 6.3 traceability.
           # In Task 2 this becomes a ghcr.io digest reference + cosign verify.
           image: ledger-api:0.1.0
@@ -69,9 +69,9 @@ spec:
               containerPort: 8080
               protocol: TCP
 
-          # ── Container-level security context ────────────────────────────
+          # Container-level security context
           securityContext:
-            # FIX: blocks setuid binaries from gaining privileges — stops the
+            # FIX: blocks setuid binaries from gaining privileges, stops the
             # classic "drop into a shell then escalate via a suid helper" path.
             allowPrivilegeEscalation: false
             # FIX: immutable root filesystem. An attacker who lands RCE through
@@ -94,13 +94,13 @@ spec:
               drop:
                 - ALL
 
-          # ── Configuration ───────────────────────────────────────────────
+          # Configuration
           envFrom:
             - configMapRef:
                 name: ledger-api-config
           env:
             # FIX: the starter hardcoded both values in plaintext in this very
-            # env: block — a live-looking Stripe key ("sk_live_...") and a
+            # env: block, a live-looking Stripe key ("sk_live_...") and a
             # database password. The literals are deliberately NOT reproduced
             # here: committing a leaked credential into a comment still puts it
             # in git history and still trips secret scanners (gitleaks in
@@ -120,8 +120,8 @@ spec:
                   name: ledger-api-secrets
                   key: DB_PASSWORD
 
-          # ── Resource requests and limits ────────────────────────────────
-          # FIX: starter set none, so the pod was BestEffort QoS — first to be
+          # Resource requests and limits
+          # FIX: starter set none, so the pod was BestEffort QoS, first to be
           # OOM-killed under pressure, and free to consume the whole node.
           # An unbounded pod in a shared cluster is a denial-of-service vector
           # against every neighbouring workload.
@@ -134,15 +134,15 @@ spec:
               # No CPU limit on purpose: CFS throttling adds tail latency to a
               # latency-sensitive payments path, and the requests already give
               # the scheduler what it needs. Memory IS capped, because memory is
-              # incompressible — an unbounded leak takes the node down.
+              # incompressible, an unbounded leak takes the node down.
               memory: 256Mi
 
-          # ── Health probes ───────────────────────────────────────────────
+          # Health probes
           # FIX: starter had none, so Kubernetes could not tell "process alive"
-          # from "service working" — a hung worker kept receiving traffic and
+          # from "service working", a hung worker kept receiving traffic and
           # a still-booting pod received traffic before it was ready.
           # startupProbe first: gives a slow cold start up to 30s (6 x 5s)
-          # without forcing the liveness probe to carry a long initial delay,
+          # without forcing the liveness probe to carry a long initial delay.
           # which would otherwise delay detection of a real hang for the
           # lifetime of the pod.
           startupProbe:
@@ -170,7 +170,7 @@ spec:
             # under load, turning a slowdown into an outage.
             failureThreshold: 3
 
-          # ── Writable paths ──────────────────────────────────────────────
+          # Writable paths
           # With readOnlyRootFilesystem the app needs somewhere for temp files.
           # emptyDir is scoped to the pod lifetime, so nothing an attacker
           # writes survives a restart.
