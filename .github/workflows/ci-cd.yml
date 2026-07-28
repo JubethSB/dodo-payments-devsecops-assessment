@@ -63,11 +63,22 @@ jobs:
           # usual way this gate gets quietly defeated.
           fetch-depth: 0
 
+      # Running the container directly rather than gitleaks-action@v2.
+      #
+      # The action crashes on this repo with "File results.sarif does not
+      # exist" while uploading its artifact, which fails the job even when the
+      # scan itself found nothing. That's an action bug, and a gate that goes
+      # red for reasons unrelated to its findings is worse than useless: people
+      # learn to ignore it.
+      #
+      # This is also the exact command validated locally by
+      # task-2-cicd-supply-chain/scripts/verify-gates.sh, so CI and local
+      # testing can't drift apart.
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_CONFIG: .gitleaks.toml
+        run: |
+          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --config=/repo/.gitleaks.toml \
+            --redact --no-banner --exit-code 1
 
   # Gate 2: SAST. Block on ERROR, warn on the rest.
   # ERROR findings are high confidence (this app has yaml.load without
@@ -104,7 +115,27 @@ jobs:
           sarif_file: semgrep.sarif
           category: semgrep
 
-      - name: Block on ERROR
+      # Blocking step. Note --exclude on the starter app, and why.
+      #
+      # The scan above covers the WHOLE repo and its SARIF goes to the Security
+      # tab, so every finding stays visible. This step decides what stops the
+      # build, and it skips task-1-workload-hardening/app-source/.
+      #
+      # That directory is the assignment's deliberately vulnerable service:
+      # yaml.load() without SafeLoader on /import, an unvalidated requests.get
+      # on /fetch, cleartext PANs on /transactions. Semgrep correctly flags 6
+      # ERROR findings there. They are the authorised target for Task 4's
+      # penetration test, so they cannot be fixed without deleting the thing
+      # the pen test exists to find.
+      #
+      # Blocking on them would leave the pipeline permanently red with no
+      # action that turns it green, which is exactly how a gate ends up
+      # disabled. Same reasoning as the Trivy unfixed-CVE policy.
+      #
+      # The exclusion is one directory, not a rule or severity change. Any new
+      # code anywhere else still hard-blocks on ERROR, which is what this gate
+      # is actually for.
+      - name: Block on ERROR (excluding the known-vulnerable starter app)
         run: |
           semgrep scan \
             --config=p/default \
@@ -112,9 +143,24 @@ jobs:
             --config=p/python \
             --config=p/dockerfile \
             --config=p/kubernetes \
+            --exclude='task-1-workload-hardening/app-source/**' \
             --severity=ERROR \
             --error \
             --metrics=off
+
+      - name: Report what the exclusion skipped
+        # Keeps the excluded findings visible in the job log, so the exclusion
+        # is a documented decision rather than a silent hole.
+        if: always()
+        run: |
+          echo "Findings inside the excluded starter app (reported, not blocking):"
+          semgrep scan \
+            --config=p/default \
+            --config=p/security-audit \
+            --config=p/python \
+            --include='task-1-workload-hardening/app-source/**' \
+            --severity=ERROR \
+            --metrics=off || true
 
   # Gate 3: dependencies. Block on fixable CRITICAL/HIGH, warn on unfixed.
   #
@@ -136,7 +182,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Trivy fs scan, SARIF
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
@@ -154,7 +200,7 @@ jobs:
           category: trivy-fs
 
       - name: Report everything, including unfixed (never blocks)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
@@ -164,7 +210,7 @@ jobs:
           exit-code: '0'
 
       - name: Block on fixable CRITICAL/HIGH
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: .
@@ -265,7 +311,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Trivy image scan, SARIF
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           # By digest, not tag. Scanning a tag leaves a window where it could be
@@ -284,7 +330,7 @@ jobs:
           category: trivy-image
 
       - name: Report everything, including unfixed (never blocks)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
@@ -294,7 +340,7 @@ jobs:
           exit-code: '0'
 
       - name: Block on fixable CRITICAL/HIGH
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}

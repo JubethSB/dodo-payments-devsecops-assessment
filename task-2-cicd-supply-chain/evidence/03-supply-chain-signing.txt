@@ -1,0 +1,17 @@
+======================================================================
+ EVIDENCE: supply chain, signed image and attestation
+ Repo   : JubethSB/dodo-payments-devsecops-assessment
+ Run    : unknown
+======================================================================
+
+Workflow jobs:
+  (unavailable)
+
+--- cosign verify (from the sign-and-attest job) ---
+  artifact not available (the signing job may not have run)
+
+--- verify locally against the published image ---
+cosign verify \
+  --certificate-identity-regexp "^https://github.com/JubethSB/dodo-payments-devsecops-assessment/\.github/workflows/.+@refs/heads/main$" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/JubethSB/ledger-api:<tag>

@@ -1,0 +1,7 @@
+======================================================================
+ EVIDENCE: SARIF uploads in the Security tab
+======================================================================
+
+{"message":"no analysis found","documentation_url":"https://docs.github.com/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository","status":"404"}(code scanning not populated yet, or the runs are still in progress)
+
+Browse: https://github.com/JubethSB/dodo-payments-devsecops-assessment/security/code-scanning
