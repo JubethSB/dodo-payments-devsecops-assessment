@@ -1,0 +1,231 @@
+# Bonus — RBAC for the developer / operator / admin personas.
+#
+# These are HUMAN roles, distinct from the workload ServiceAccounts in
+# 00-workload-serviceaccounts.yaml. The design principle throughout: each
+# persona gets the narrowest set of verbs that lets them do their actual job,
+# and nobody gets a verb "just in case".
+#
+# The single most important decision here concerns Secrets. In a PCI-scoped
+# namespace, `get secrets` is equivalent to reading the Stripe live key and the
+# database password — sealing them in git is pointless if any developer can
+# simply read the decrypted Secret out of the cluster. So NO persona below,
+# including admin, is granted get/list/watch on Secrets. Break-glass access is
+# a deliberate, audited action performed by a cluster-admin, not a standing
+# grant attached to a day-to-day role.
+#
+# Second decision: `pods/exec` is treated as a privileged verb, not a debugging
+# convenience. A shell inside a pod runs with that pod's identity and can read
+# every mounted Secret and env var — it bypasses the Secret RBAC above
+# entirely. Developers therefore get logs, never exec.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEVELOPER — read-mostly. Can observe and diagnose, cannot change running
+# state and cannot read credentials.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: payments-developer
+  namespace: payments
+  labels:
+    rbac.dodo.io/persona: developer
+rules:
+  # Inspect workloads and their configuration.
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, endpoints]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  # Diagnose failures.
+  - apiGroups: [""]
+    resources: [pods/log, events]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+  # See which policies would block their manifest, so they can self-serve the
+  # fix instead of filing a ticket. Read-only: they cannot edit the policies.
+  - apiGroups: [kyverno.io]
+    resources: [clusterpolicies, policies]
+    verbs: [get, list, watch]
+  - apiGroups: [wgpolicyk8s.io]
+    resources: [policyreports, clusterpolicyreports]
+    verbs: [get, list, watch]
+  # NOTE the absences, all deliberate:
+  #   - secrets            : credential disclosure
+  #   - pods/exec, portforward : shell access bypasses every Secret restriction
+  #   - create/update/delete   : production change goes through GitOps (Task 2),
+  #                              not through a human's kubectl
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# OPERATOR — on-call. Can act to restore service, still cannot read credentials.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: payments-operator
+  namespace: payments
+  labels:
+    rbac.dodo.io/persona: operator
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, endpoints, events]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets]
+    verbs: [get, list, watch]
+  # Scale and restart to recover from an incident. `patch` on deployments is
+  # what `kubectl rollout restart` and `kubectl scale` actually use.
+  - apiGroups: [apps]
+    resources: [deployments, deployments/scale, statefulsets, statefulsets/scale]
+    verbs: [patch, update]
+  # Delete a wedged pod so the ReplicaSet recreates it. Deleting a Pod is
+  # recoverable; deleting a Deployment is not, so that verb is not granted.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [kyverno.io]
+    resources: [clusterpolicies, policies]
+    verbs: [get, list, watch]
+  - apiGroups: [wgpolicyk8s.io]
+    resources: [policyreports, clusterpolicyreports]
+    verbs: [get, list, watch]
+  # Still no secrets, and still no exec — an on-call engineer restores service
+  # by restarting and rolling back, not by shelling into a PCI workload.
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# ADMIN — namespace owner. Full lifecycle over workloads, explicitly NOT over
+# credentials.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: payments-admin
+  namespace: payments
+  labels:
+    rbac.dodo.io/persona: admin
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, endpoints, events, serviceaccounts,
+                persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/log, pods/status]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments, replicasets, statefulsets, daemonsets,
+                deployments/scale, statefulsets/scale]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Manage SealedSecrets — the CIPHERTEXT resource. An admin can rotate and
+  # deploy a sealed credential without ever being able to read the plaintext,
+  # which is precisely the property Sealed Secrets buys us.
+  - apiGroups: [bitnami.com]
+    resources: [sealedsecrets]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # Delegate access within the namespace.
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [roles, rolebindings]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [kyverno.io]
+    resources: [clusterpolicies, policies]
+    verbs: [get, list, watch]
+  - apiGroups: [wgpolicyk8s.io]
+    resources: [policyreports, clusterpolicyreports]
+    verbs: [get, list, watch]
+  # DELIBERATELY ABSENT even at admin level:
+  #   - core "secrets" get/list/watch — see the header note. Admins manage
+  #     SealedSecrets (encrypted) and let the controller do the decryption.
+  #   - pods/exec and pods/attach — see below for the audited break-glass role.
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# BREAK-GLASS — exec into a PCI workload. Not bound to anyone by default.
+# ─────────────────────────────────────────────────────────────────────────────
+# Separated into its own Role so that granting it is a discrete, reviewable
+# event with a start and an end, rather than a permission quietly inherited by
+# every admin forever. The expected workflow is: incident declared -> a
+# time-boxed RoleBinding is created -> the work happens under audit -> the
+# binding is deleted. Bound to nothing in this manifest, on purpose.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: payments-breakglass-exec
+  namespace: payments
+  labels:
+    rbac.dodo.io/persona: breakglass
+  annotations:
+    rbac.dodo.io/warning: >-
+      Grants shell access inside PCI-scoped workloads. A shell runs with the
+      pod's identity and can read every mounted Secret, bypassing the Secret
+      restrictions on all other roles. Bind only for the duration of an
+      incident, and record the justification.
+rules:
+  - apiGroups: [""]
+    resources: [pods/exec, pods/attach, pods/portforward]
+    verbs: [create, get]
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Bindings. Groups, not individual users: membership is managed in the identity
+# provider, so onboarding and offboarding never require a cluster change.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: payments-developer
+  namespace: payments
+subjects:
+  - kind: Group
+    name: dodo:payments-developers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: payments-developer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: payments-operator
+  namespace: payments
+subjects:
+  - kind: Group
+    name: dodo:payments-operators
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: payments-operator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: payments-admin
+  namespace: payments
+subjects:
+  - kind: Group
+    name: dodo:payments-admins
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: payments-admin
+  apiGroup: rbac.authorization.k8s.io
+# No RoleBinding for payments-breakglass-exec — created on demand only.

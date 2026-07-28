@@ -1,0 +1,34 @@
+===============================================================
+ EVIDENCE: Ingress with TLS termination and security headers
+ Generated: 2026-07-28T15:38:18Z
+===============================================================
+
+$ kubectl get ingress -n payments
+NAME         CLASS   HOSTS          ADDRESS      PORTS     AGE
+ledger-api   nginx   ledger.local   172.19.0.3   80, 443   69s
+
+NOTE: the security headers are NOT set with a configuration-snippet
+annotation. ingress-nginx v1.9+ rejects that by default because snippets
+inject raw nginx directives from a namespaced object into the shared
+controller config (cf. CVE-2021-25742, CVE-2023-5044). Headers are
+applied via the controller's own ConfigMap, editable only by a cluster
+administrator:
+
+$ kubectl get configmap custom-headers -n ingress-nginx -o jsonpath='{.data}'
+{"Referrer-Policy":"no-referrer","X-Content-Type-Options":"nosniff","X-Frame-Options":"DENY"}
+
+$ curl -sk --resolve ledger.local:8443:127.0.0.1 https://ledger.local:8443/health
+{
+  "status": "ok"
+}
+
+HTTP 200
+
+$ curl -skI ... (response headers)
+HTTP/1.1 200 OK
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+
+RESULT: TLS terminated at the Ingress, backend reachable, all three
+security headers present, snippet-injection risk avoided.

@@ -1,0 +1,63 @@
+# Ingress for ledger-api.
+#
+# Single controlled entry point into the namespace. reporting is deliberately
+# NOT exposed — it is an internal consumer, reachable only via ClusterIP inside
+# the cluster. Every service you do not publish is attack surface you do not
+# have to defend.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ledger-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+  annotations:
+    # Force TLS. ledger-api carries cardholder data, so cleartext transport is
+    # not acceptable even inside a lab — PCI DSS 4.x requires strong
+    # cryptography for PAN in transit over open networks.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # Cap request bodies. /import parses whatever it is sent, so bounding the
+    # body size limits how much an attacker can push through that sink.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    #
+    # SECURITY HEADERS — deliberately NOT set with a configuration-snippet.
+    #
+    # The obvious way to add X-Content-Type-Options / X-Frame-Options here is
+    # nginx.ingress.kubernetes.io/configuration-snippet. ingress-nginx v1.9+
+    # rejects that annotation by default ("Snippet directives are disabled by
+    # the Ingress administrator") and that default is correct: snippets inject
+    # raw nginx directives from a namespaced object into the shared controller
+    # config, so anyone who can create an Ingress can alter how the controller
+    # proxies traffic for OTHER tenants. That is the class of issue behind
+    # CVE-2021-25742 and CVE-2023-5044.
+    #
+    # Re-enabling snippets to add three response headers would trade a real
+    # cross-tenant privilege-escalation path for a cosmetic hardening win — the
+    # wrong trade. The headers are instead applied cluster-wide by the ingress
+    # controller's own ConfigMap, which only a cluster administrator can edit:
+    #
+    #   kubectl -n ingress-nginx patch configmap ingress-nginx-controller \
+    #     --type merge -p '{"data":{"add-headers":"ingress-nginx/custom-headers"}}'
+    #
+    # See scripts/deploy.sh, which creates that custom-headers ConfigMap.
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ledger.local
+      # Self-signed for the local cluster; created by the deploy script.
+      # Task 2/3 replace this with a real issuer / Istio gateway termination.
+      secretName: ledger-api-tls
+  rules:
+    - host: ledger.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ledger-api
+                port:
+                  name: http

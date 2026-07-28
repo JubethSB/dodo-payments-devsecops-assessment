@@ -1,0 +1,31 @@
+# The payments namespace.
+#
+# Pod Security Standards are enforced here at the NAMESPACE level (bonus item).
+# `restricted` is the strictest built-in profile: it requires runAsNonRoot,
+# seccomp RuntimeDefault, allowPrivilegeEscalation=false and capabilities
+# drop ALL — exactly the controls this task asks for.
+#
+# Why all three labels:
+#   enforce — actually rejects non-conforming pods at admission
+#   audit   — annotates violations in the audit log
+#   warn    — returns a client-side warning to whoever ran kubectl apply
+# Pinning `-version: latest` means we inherit new checks as Kubernetes adds
+# them, rather than freezing against an old ruleset.
+#
+# This is defence in depth WITH Kyverno, not instead of it: PSS is built into
+# the API server and cannot be bypassed by deleting a webhook, while Kyverno
+# expresses the policies PSS cannot (image registry, :latest, signatures).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payments
+  labels:
+    name: payments
+    # PCI DSS scoping label — this namespace holds cardholder-adjacent data.
+    pci-scope: "cde"
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

@@ -1,0 +1,73 @@
+# Kyverno — reject containers that run as root.
+#
+# Why this exists alongside Pod Security Standards `restricted` (which already
+# requires runAsNonRoot): PSS is all-or-nothing per namespace and gives a
+# generic rejection message. Kyverno lets us state the rule explicitly, produce
+# an actionable message naming the offending field, scope exemptions to named
+# workloads if ever needed, and report violations through Policy Reports.
+#
+# The layers fail differently, which is the point. PSS is compiled into the API
+# server and keeps working if Kyverno is uninstalled or its webhook is deleted;
+# Kyverno covers rules PSS cannot express (registry allow-lists, image tags,
+# signature verification). Removing either one still leaves a control standing.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+  annotations:
+    policies.kyverno.io/title: Require non-root containers
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Containers must not run as root. Running as UID 0 means any container
+      escape starts with root on the node, and it removes the user-namespace
+      boundary that separates a compromised process from the kubelet.
+spec:
+  # Enforce = reject at admission. The alternative, Audit, only records the
+  # violation; for a PCI-scoped namespace a control that merely observes is not
+  # a control. Deployed as Enforce from the start rather than soft-launched,
+  # because this is a greenfield namespace with no legacy workloads to break.
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: check-runasnonroot
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: >-
+          Containers must run as non-root. Set
+          securityContext.runAsNonRoot=true and a non-zero runAsUser at the pod
+          or container level.
+        pattern:
+          spec:
+            # =(field) means "if this field exists, it must match" — it lets a
+            # pod satisfy the rule at pod level OR at container level without
+            # forcing both to be present.
+            =(securityContext):
+              =(runAsNonRoot): "true"
+            containers:
+              - =(securityContext):
+                  =(runAsNonRoot): "true"
+    - name: check-runasuser-not-zero
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: "runAsUser must not be 0 (root)."
+        pattern:
+          spec:
+            =(securityContext):
+              =(runAsUser): ">0"
+            containers:
+              - =(securityContext):
+                  =(runAsUser): ">0"

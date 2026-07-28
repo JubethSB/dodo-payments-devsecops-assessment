@@ -1,0 +1,12 @@
+# Built in Phase 7 (Task 2 — Secure CI/CD Pipeline & Supply Chain).
+# Lives at repo root because GitHub Actions only reads .github/workflows/ here,
+# regardless of which task folder it logically belongs to.
+name: ci-cd
+on:
+  push:
+    branches: [main]
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "pipeline to be built in Phase 7"

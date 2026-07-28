@@ -1,0 +1,135 @@
+# reporting — the neighbour service required by Task 1.
+#
+# The starter shipped a `reporting` pod that was just `curlimages/curl` running
+# `sleep infinity` — a shell with no Service, no config and no purpose other
+# than to be a pivot point. It is replaced here with a real service that has a
+# Deployment, Service and ConfigMap, and receives the same hardening as
+# ledger-api. The bare curl client returns in Task 3 as the *unauthorised*
+# caller used to demonstrate the mesh AuthorizationPolicy denying traffic.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reporting-config
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: payments-platform
+data:
+  # In-cluster DNS name of the upstream. Not a secret, so ConfigMap is correct.
+  LEDGER_API_URL: "http://ledger-api:8080"
+  REQUEST_TIMEOUT_SECONDS: "3"
+  LOG_LEVEL: "info"
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reporting
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/component: reporting
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reporting
+        app.kubernetes.io/part-of: payments-platform
+        app.kubernetes.io/component: reporting
+    spec:
+      serviceAccountName: reporting
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+        runAsGroup: 10002
+        fsGroup: 10002
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reporting
+          image: reporting:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10002
+            runAsGroup: 10002
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: reporting-config
+          # No Secret here — reporting holds no credentials. Every secret a
+          # workload does not carry is one an attacker cannot steal from it.
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reporting
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: reporting
+    app.kubernetes.io/part-of: payments-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: reporting
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+      protocol: TCP

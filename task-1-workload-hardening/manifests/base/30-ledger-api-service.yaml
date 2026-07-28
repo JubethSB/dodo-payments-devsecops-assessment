@@ -1,0 +1,26 @@
+# ledger-api Service — ClusterIP only.
+#
+# Deliberately NOT NodePort or LoadBalancer. ledger-api handles cardholder data;
+# the only path in from outside the cluster is through the Ingress (see
+# 60-ingress.yaml), which gives us one enforcement point for TLS, and later a
+# single ingress gateway to reason about for PCI CDE scoping.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ledger-api
+  ports:
+    - name: http
+      port: 8080
+      # Named target port, so the container can move ports without editing
+      # the Service. Istio (Task 3) also uses the `http` name prefix to infer
+      # the L7 protocol for its filters.
+      targetPort: http
+      protocol: TCP

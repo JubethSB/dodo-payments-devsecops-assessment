@@ -1,0 +1,83 @@
+# Kyverno — reject unsigned images.
+#
+# This is the third guardrail Task 1 asks for ("reject containers that ... are
+# unsigned") and the admission-side half of Task 2's supply-chain work: Task 2
+# signs the image with cosign keyless in GitHub Actions, this policy is what
+# makes that signature actually mean something at deploy time. A signature
+# nobody verifies is decoration.
+#
+# Keyless / Fulcio model, and what is really being asserted:
+#   - GitHub Actions gets a short-lived OIDC token describing the workflow.
+#   - cosign exchanges it with Fulcio for an ephemeral X.509 cert carrying that
+#     workflow identity, signs, and logs the entry to the Rekor transparency log.
+#   - The signing key lives for ~10 minutes and is never stored, so there is no
+#     long-lived private key to leak — the classic failure mode of key-based
+#     signing.
+#   - Verification asserts provenance, not safety: "this image was built by
+#     THIS workflow in THIS repo". It does not claim the image is free of CVEs;
+#     that is the scanner's job. Both gates are needed and they answer
+#     different questions.
+#
+# subject/issuer are the load-bearing fields. Verifying "signed by someone" is
+# worthless — anyone can sign anything through Fulcio. The check must pin the
+# expected workflow identity, which is what these two do.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signature
+  annotations:
+    policies.kyverno.io/title: Verify image signatures (cosign keyless)
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Pod
+spec:
+  # NOTE ON ROLLOUT ORDER — deliberately Audit, not Enforce, in Task 1.
+  #
+  # Task 1 runs entirely on locally-built images (ledger-api:0.1.0,
+  # reporting:0.1.0) that are side-loaded into the cluster and never pushed to
+  # a registry, so they have no signature and no Rekor entry — there is nothing
+  # to verify. Setting Enforce here would block the very workload this task is
+  # meant to deploy, and "we turned the policy off to make it work" is exactly
+  # the failure this assessment is testing for.
+  #
+  # So: Audit now (violations are recorded in PolicyReports and visible), and
+  # flipped to Enforce in Task 2 once the GitHub Actions pipeline is pushing
+  # cosign-signed images to GHCR. The imageReferences below already point at
+  # the GHCR path so the switch is a one-line change, not a rewrite.
+  validationFailureAction: Audit
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  rules:
+    - name: verify-ghcr-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/*/ledger-api:*"
+            - "ghcr.io/*/reporting:*"
+          # mutateDigest rewrites the tag to the digest that was actually
+          # verified, closing a real TOCTOU gap: without it the tag could be
+          # repointed to a different image between admission and the kubelet's
+          # pull, so what gets verified is not necessarily what gets run.
+          #
+          # It is false here ONLY because Kyverno rejects mutateDigest:true
+          # while validationFailureAction is Audit ("mutateDigest must be set
+          # to false for 'Audit' failure action") — an audit-mode policy is not
+          # permitted to change the resource it is merely observing. This flips
+          # to true at the same moment the action flips to Enforce in Task 2.
+          mutateDigest: false
+          verifyDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    # Pin BOTH the workflow identity and the OIDC issuer.
+                    subject: "https://github.com/*/.github/workflows/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev

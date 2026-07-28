@@ -1,0 +1,25 @@
+# Task 3 — Service Mesh & Zero-Trust (Istio)
+
+## 1. Approach & design decisions
+_TODO_
+
+## 2. Architecture diagram
+_TODO_
+
+## 3. Prerequisites
+_TODO_
+
+## 4. Step-by-step reproduction
+_TODO_
+
+## 5. Verification
+_TODO_
+
+## 6. Evidence
+_TODO — link screenshots/recordings from ./screenshots/_
+
+## 7. Bonus items completed
+_TODO_
+
+## 8. Known limitations / what I'd do with more time
+_TODO_

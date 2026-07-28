@@ -1,0 +1,31 @@
+# Normalise line endings.
+#
+# This repo is authored on Windows but every script runs inside a Linux
+# container or on a CI runner. A shell script checked out with CRLF fails at
+# the shebang with "bad interpreter: /usr/bin/env bash^M", and the failure is
+# confusing because the file looks fine in an editor. Forcing LF on everything
+# executable removes a whole class of "works on my machine" bug reports.
+* text=auto eol=lf
+
+# Must be LF — executed by a shell.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+
+# Must be LF — parsed by Kubernetes / CI tooling.
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.py            text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+
+# Binary: never touch.
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.pdf           binary
+*.gz            binary
+*.tar           binary
+*.zip           binary
+*.cast          binary

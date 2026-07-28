@@ -1,0 +1,55 @@
+# Kyverno — reject :latest and untagged images.
+#
+# Why this matters more than it looks: `:latest` is a mutable pointer. The bytes
+# running in production can change with no git commit, no PR and no audit
+# record, simply because someone pushed to the registry. That breaks change
+# control (PCI DSS 6.5), makes rollback unreliable — you cannot roll back to
+# "the previous latest" — and defeats signature verification, since you cannot
+# state which artifact you actually attested.
+#
+# It is also a supply-chain attack path: an attacker who gets one push to the
+# registry gets silent execution on the next pod restart, with nothing in the
+# cluster's own history to show what changed.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow latest tag
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-image-tag
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: "An image tag is required; untagged images resolve to :latest."
+        pattern:
+          spec:
+            containers:
+              - image: "*:*"
+    - name: validate-image-tag-not-latest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - payments
+      validate:
+        message: >-
+          Using the :latest tag is not allowed. Pin an immutable version tag,
+          or preferably a digest (image@sha256:...).
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"

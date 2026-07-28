@@ -1,0 +1,37 @@
+===============================================================
+ EVIDENCE: Admission guardrails rejecting non-compliant Pods
+ Generated: 2026-07-28T15:21:54Z
+===============================================================
+
+Active policies:
+disallow-latest-tag                Enforce
+require-hardened-securitycontext   Enforce
+require-non-root                   Enforce
+verify-image-signature             Audit
+
+--- TEST A: container running as root (runAsUser: 0) ---
+Caught by: Pod Security Standards (restricted) - the API-server layer
+Error from server (Forbidden): error when creating "STDIN": pods "ev-root" is forbidden: violates PodSecurity "restricted:latest": runAsNonRoot != true (pod or container "c" must set securityContext.runAsNonRoot=true), runAsUser=0 (container "c" must not set runAsUser=0), seccompProfile (pod or container "c" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+
+--- TEST B: mutable :latest tag ---
+Caught by: Kyverno disallow-latest-tag (PSS cannot express this)
+  validate-image-tag-not-latest: 'validation error: Using the :latest tag is not allowed.
+    Pin an immutable version tag, or preferably a digest (image@sha256:...). rule
+    validate-image-tag-not-latest failed at path /spec/containers/0/image/'
+
+--- TEST C: no resource limits (fully PSS-compliant otherwise) ---
+Caught by: Kyverno require-resource-limits (PSS does not check resources)
+    and a memory limit. A pod with no limits is BestEffort QoS and can exhaust the
+    node, denying service to every workload beside it. rule require-resource-limits
+    failed at path /spec/containers/0/resources/limits/'
+
+--- TEST D: writable root filesystem (fully PSS-compliant otherwise) ---
+Caught by: Kyverno require-readonly-root-filesystem
+  require-readonly-root-filesystem: 'validation error: Containers must set securityContext.readOnlyRootFilesystem=true.
+    Mount an emptyDir for any path that genuinely needs writes. rule require-readonly-root-filesystem
+    failed at path /spec/containers/0/securityContext/readOnlyRootFilesystem/'
+
+RESULT: all four rejected at admission. No pod was created.
+ledger-api-77cd97fd8f-gbbll 1/1 Running
+ledger-api-77cd97fd8f-j8n9p 1/1 Running
+reporting-5fc4d799b6-ttfrc 1/1 Running

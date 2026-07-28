@@ -1,0 +1,28 @@
+# kind cluster for Task 1 — ledger-api workload hardening
+#
+# Single control-plane node. NOTE: this Docker Desktop VM has only ~3.7 GB RAM;
+# a two-node cluster starved each node's systemd and failed to reach the
+# multi-user target ("could not find a log line ... Reached target Multi-User
+# System"). One node boots reliably and is sufficient for the hardening work.
+#
+# The node is labelled ingress-ready and maps host :8080->80 / :8443->443 so an
+# ingress-nginx controller can serve the Ingress object the task requires,
+# with no cloud LoadBalancer.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ledger
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP

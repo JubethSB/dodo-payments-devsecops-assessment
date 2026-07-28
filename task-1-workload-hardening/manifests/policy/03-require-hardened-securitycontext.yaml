@@ -1,0 +1,111 @@
+# Kyverno — the rest of the securityContext baseline.
+#
+# Covers the three controls Task 1 names alongside non-root: all capabilities
+# dropped, read-only root filesystem, and seccomp RuntimeDefault. Split into
+# separate rules so a rejection message names exactly which control failed
+# rather than dumping one opaque combined error.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-hardened-securitycontext
+  annotations:
+    policies.kyverno.io/title: Require hardened securityContext
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-drop-all-capabilities
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      validate:
+        message: >-
+          Containers must drop ALL Linux capabilities
+          (securityContext.capabilities.drop: [ALL]). The runtime default set
+          still includes NET_RAW, which lets a compromised pod forge packets
+          and ARP-spoof its neighbours on the pod network.
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  capabilities:
+                    drop:
+                      - ALL
+
+    - name: require-readonly-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      validate:
+        message: >-
+          Containers must set securityContext.readOnlyRootFilesystem=true.
+          Mount an emptyDir for any path that genuinely needs writes.
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+
+    - name: require-seccomp-runtimedefault
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      validate:
+        message: >-
+          seccompProfile.type must be RuntimeDefault (or Localhost with a
+          profile). Unconfined leaves the whole syscall table reachable from a
+          compromised container.
+        anyPattern:
+          - spec:
+              securityContext:
+                seccompProfile:
+                  type: "RuntimeDefault | Localhost"
+          - spec:
+              containers:
+                - securityContext:
+                    seccompProfile:
+                      type: "RuntimeDefault | Localhost"
+
+    - name: disallow-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      validate:
+        message: "allowPrivilegeEscalation must be false."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+
+    - name: require-resource-limits
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [payments]
+      validate:
+        message: >-
+          Every container must set resource requests and a memory limit. A pod
+          with no limits is BestEffort QoS and can exhaust the node, denying
+          service to every workload beside it.
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    memory: "?*"

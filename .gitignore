@@ -1,0 +1,32 @@
+# secrets & credentials
+*.key
+*.pem
+.env
+kubeconfig
+
+# Plaintext Kubernetes Secrets must never be committed.
+**/secrets/*.yaml
+!**/secrets/.gitkeep
+
+# ...but SealedSecrets ARE meant to be committed. They contain only ciphertext
+# encrypted to a controller keypair that never leaves the cluster, which is the
+# entire point of the pattern: the manifest is safe in a public repo, and
+# GitOps (Task 2) needs it in git to sync from. Re-included explicitly, since
+# the broad rule above would otherwise drop them and silently break the deploy.
+!**/secrets/*sealedsecret*.yaml
+!**/secrets/*sealed-secret*.yaml
+
+# local/cluster
+.kube/
+*.log
+
+# OS/editor
+.DS_Store
+.vscode/
+node_modules/
+
+# Machine-local Claude Code permission grants. Not portable between machines,
+# and it accumulates verbatim copies of every command run — which can include
+# credential strings from grep patterns. The shared .claude/settings.json is
+# committed; this per-machine override is not.
+.claude/settings.local.json

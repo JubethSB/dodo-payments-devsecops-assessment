@@ -1,0 +1,16 @@
+# Evidence: Pod Security Standards 'restricted' rejecting the original insecure Deployment
+# Generated: 2026-07-28T15:05:47Z
+# Source manifest: app-source/deploy/deployment.yaml (unmodified starter)
+
+$ kubectl apply -f app-source/deploy/deployment.yaml
+deployment.apps/ledger-api unchanged
+
+$ kubectl get deploy ledger-api -n payments
+NAME         READY   UP-TO-DATE   AVAILABLE   AGE
+ledger-api   0/3     0            0           28s
+
+$ kubectl get pods -n payments   # <-- no pods: every replica was refused
+No resources found in payments namespace.
+
+$ kubectl get events -n payments --field-selector reason=FailedCreate
+Error creating: pods "ledger-api-f86fcdf5d-tdx8m" is forbidden: violates PodSecurity "restricted:latest": allowPrivilegeEscalation != false (container "ledger-api" must set securityContext.allowPrivilegeEscalation=false), unrestricted capabilities (container "ledger-api" must set securityContext.capabilities.drop=["ALL"]), runAsNonRoot != true (pod or container "ledger-api" must set securityContext.runAsNonRoot=true), seccompProfile (pod or container "ledger-api" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")

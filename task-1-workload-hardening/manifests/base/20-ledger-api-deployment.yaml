@@ -1,0 +1,195 @@
+# ledger-api — hardened Deployment.
+#
+# This is the security-critical artifact of Task 1. Every field below that
+# differs from the starter (app-source/deploy/deployment.yaml) is there to
+# close a specific finding; the inline comments say which.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-api
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: ledger-api
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  # Keep capacity during rollouts. maxUnavailable:0 means a new pod must go
+  # Ready before an old one is removed, so a bad image cannot empty the
+  # Deployment — the rollout stalls instead of taking the service down.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ledger-api
+        app.kubernetes.io/part-of: payments-platform
+        app.kubernetes.io/component: api
+    spec:
+      # FIX: starter used the namespace `default` ServiceAccount.
+      serviceAccountName: ledger-api
+      # FIX: no API token is projected into the pod. ledger-api never calls the
+      # Kubernetes API, so a mounted token is pure attack surface — it is the
+      # first thing an attacker reads at /var/run/secrets/... after RCE.
+      automountServiceAccountToken: false
+
+      # ── Pod-level security context ──────────────────────────────────────
+      securityContext:
+        # FIX: starter ran as root (the image has no USER directive).
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Owns mounted volumes so the non-root UID can write to /tmp.
+        fsGroup: 10001
+        # FIX: seccomp RuntimeDefault — blocks the ~300 syscalls the container
+        # runtime deems unnecessary (keyctl, ptrace, mount, kexec_load...).
+        # Without this the container runs seccomp-unconfined and a kernel-level
+        # container escape has the full syscall table to work with.
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: ledger-api
+          # Pinned tag, never :latest. Kyverno enforces this cluster-wide
+          # (../policy/disallow-latest-tag.yaml) — a mutable tag means the
+          # bytes running in production can change without any git commit,
+          # which breaks both change control and PCI DSS 6.3 traceability.
+          # In Task 2 this becomes a ghcr.io digest reference + cosign verify.
+          image: ledger-api:0.1.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # ── Container-level security context ────────────────────────────
+          securityContext:
+            # FIX: blocks setuid binaries from gaining privileges — stops the
+            # classic "drop into a shell then escalate via a suid helper" path.
+            allowPrivilegeEscalation: false
+            # FIX: immutable root filesystem. An attacker who lands RCE through
+            # /import (yaml.load deserialisation) cannot drop a webshell, a
+            # crypto-miner, or a persistence hook onto disk. Writable paths are
+            # explicit emptyDir mounts below and nothing else.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              # FIX: drop ALL Linux capabilities. The starter inherited the
+              # runtime default set (CHOWN, SETUID, SETGID, NET_RAW, ...).
+              # NET_RAW alone lets a compromised pod craft raw packets for ARP
+              # spoofing against neighbours on the pod network.
+              # Nothing is added back: a Flask app listening on 8080 needs no
+              # capability at all (8080 > 1024, so not even NET_BIND_SERVICE).
+              drop:
+                - ALL
+
+          # ── Configuration ───────────────────────────────────────────────
+          envFrom:
+            - configMapRef:
+                name: ledger-api-config
+          env:
+            # FIX: the starter hardcoded both values in plaintext in this very
+            # env: block — a live-looking Stripe key ("sk_live_...") and a
+            # database password. The literals are deliberately NOT reproduced
+            # here: committing a leaked credential into a comment still puts it
+            # in git history and still trips secret scanners (gitleaks in
+            # Task 2). See app-source/deploy/deployment.yaml for the original.
+            #
+            # They now come from a Secret whose ciphertext-only form is what
+            # gets committed (SealedSecret, see ../secrets/). The plaintext key
+            # is gone from git entirely.
+            - name: STRIPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: ledger-api-secrets
+                  key: STRIPE_API_KEY
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ledger-api-secrets
+                  key: DB_PASSWORD
+
+          # ── Resource requests and limits ────────────────────────────────
+          # FIX: starter set none, so the pod was BestEffort QoS — first to be
+          # OOM-killed under pressure, and free to consume the whole node.
+          # An unbounded pod in a shared cluster is a denial-of-service vector
+          # against every neighbouring workload.
+          # requests = scheduler guarantee; limits = hard ceiling.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              # No CPU limit on purpose: CFS throttling adds tail latency to a
+              # latency-sensitive payments path, and the requests already give
+              # the scheduler what it needs. Memory IS capped, because memory is
+              # incompressible — an unbounded leak takes the node down.
+              memory: 256Mi
+
+          # ── Health probes ───────────────────────────────────────────────
+          # FIX: starter had none, so Kubernetes could not tell "process alive"
+          # from "service working" — a hung worker kept receiving traffic and
+          # a still-booting pod received traffic before it was ready.
+          # startupProbe first: gives a slow cold start up to 30s (6 x 5s)
+          # without forcing the liveness probe to carry a long initial delay,
+          # which would otherwise delay detection of a real hang for the
+          # lifetime of the pod.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 2
+            # Deliberately slacker than readiness: readiness pulls a sick pod
+            # out of the Service quickly, liveness restarts it only when it is
+            # genuinely wedged. Aggressive liveness probes cause restart storms
+            # under load, turning a slowdown into an outage.
+            failureThreshold: 3
+
+          # ── Writable paths ──────────────────────────────────────────────
+          # With readOnlyRootFilesystem the app needs somewhere for temp files.
+          # emptyDir is scoped to the pod lifetime, so nothing an attacker
+          # writes survives a restart.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+
+      # Spread replicas across nodes where possible. ScheduleAnyway (not
+      # DoNotSchedule) so the single-node dev cluster still schedules both.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger-api

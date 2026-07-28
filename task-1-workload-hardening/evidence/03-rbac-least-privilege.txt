@@ -1,0 +1,37 @@
+===============================================================
+ EVIDENCE: Least-privilege RBAC (personas + workload identity)
+ Generated: 2026-07-28T15:24:47Z
+===============================================================
+
+NOTE ON METHOD: 'kubectl auth can-i create pods/exec' (slash form) is
+unreliable - it matches the plain 'pods' grant and wrongly reports yes.
+The authoritative form is '--subresource=exec', used below.
+
+PERSONA                        READPODS  SECRETS  EXEC   PATCHDEP  DELDEP 
+dodo:payments-developers       yes       no       no     no        no     
+dodo:payments-operators        yes       no       no     yes       no     
+dodo:payments-admins           yes       no       no     yes       yes    
+
+Key results:
+  * NO persona - including admin - can read core Secrets.
+  * NO persona has standing exec/shell access into a PCI workload.
+  * admin manages SealedSecrets (ciphertext) instead: create sealedsecrets = yes
+  * break-glass exec Role exists but is bound to nobody:
+      bound: payments-admin
+      bound: payments-developer
+      bound: payments-operator
+
+--- Workload identity: ledger-api ServiceAccount has NO Role bound ---
+ledger-api makes zero Kubernetes API calls, so least privilege is no
+permissions AND no projected token. Verified in-cluster:
+
+$ kubectl exec ledger-api-77cd97fd8f-gbbll -- ls /var/run/secrets/kubernetes.io/serviceaccount/token
+ls: cannot access '/var/run/secrets/kubernetes.io/serviceaccount/token': No such file or directory
+  --> no token projected, as intended (automountServiceAccountToken: false)
+
+$ kubectl auth can-i --list --as=system:serviceaccount:payments:ledger-api -n payments
+Resources                                       Non-Resource URLs                      Resource Names   Verbs
+selfsubjectreviews.authentication.k8s.io        []                                     []               [create]
+selfsubjectaccessreviews.authorization.k8s.io   []                                     []               [create]
+selfsubjectrulesreviews.authorization.k8s.io    []                                     []               [create]
+                                                [/.well-known/openid-configuration/]   []               [get]
