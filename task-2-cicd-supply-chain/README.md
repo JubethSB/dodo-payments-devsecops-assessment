@@ -304,6 +304,53 @@ threshold would have made the gate weaker everywhere; excluding one known,
 documented directory leaves it at full strength for everything that is actually
 under development.
 
+And that turned out to matter, because of what it caught next.
+
+**4. With the starter app excluded, Semgrep found a real vulnerability in the
+pipeline itself.**
+
+Two `ERROR` findings remained, both `run-shell-injection` in
+`.github/workflows/ci-cd.yml`. My own code. The pattern:
+
+```yaml
+run: |
+  IMAGE="${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+```
+
+A `${{ }}` expression is substituted by Actions **before bash ever parses the
+line**, so it is not a shell variable, it is string interpolation into a script.
+Anything attacker-influenced reaching one of those contexts is command
+execution on the runner, with whatever the job's token can do. Here that job
+holds `packages: write`, and the signing job holds `id-token: write`, which is
+the credential that mints signing certificates.
+
+Every affected step now passes the value through `env:` and references it as a
+normal shell variable:
+
+```yaml
+env:
+  DIGEST: ${{ steps.build.outputs.digest }}
+run: |
+  IMAGE="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+```
+
+This is the single most useful thing the gate did. The pipeline enforcing the
+security controls had a security bug, and the control caught it. It also would
+never have surfaced from local validation, because nothing local evaluates
+GitHub Actions expression syntax.
+
+**5. A broken scanner config is indistinguishable from a failing gate.**
+
+The gitleaks job failed with `unable to load gitleaks config: toml: array
+elements must be separated by commas`. An earlier bulk punctuation edit across
+the repo had turned two array separators in `.gitleaks.toml` from `,` into `.`.
+
+gitleaks exits non-zero for a config error and for a real finding alike. In the
+Actions UI both are a red X on "Secrets scan", so for one run the secrets gate
+had scanned precisely nothing while looking like it was working. `verify-gates.sh`
+now parses the TOML before scanning, so a malformed config is reported as a
+config error rather than mistaken for a security result.
+
 ## Bugs I hit while validating this
 
 I'm listing these because they're the reason `verify-gates.sh` runs negative

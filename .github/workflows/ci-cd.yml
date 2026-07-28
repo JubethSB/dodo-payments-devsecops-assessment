@@ -164,6 +164,18 @@ jobs:
 
   # Gate 3: dependencies. Block on fixable CRITICAL/HIGH, warn on unfixed.
   #
+  # scanners: vuln is deliberate. Trivy's fs scan runs vuln + secret + misconfig
+  # by default, and on the first real run its secret scanner blocked the build
+  # on the starter app's plaintext sk_live_ key.
+  #
+  # That key is already handled: gitleaks is the secrets gate and .gitleaks.toml
+  # allowlists that one file with a documented reason. Leaving Trivy's secret
+  # scanner on meant two tools owning the same concern with different rulesets
+  # and no shared allowlist, so satisfying one would not satisfy the other and
+  # every future exception would have to be written twice.
+  #
+  # One gate per concern: gitleaks owns secrets, Trivy owns CVEs.
+  #
   # The unfixed part is the important bit. There's no patch to apply, so the
   # only ways back to green are suppressing the finding or not deploying, and
   # under delivery pressure people suppress. Then the gate is blind for
@@ -186,6 +198,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln
           format: sarif
           output: trivy-fs.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -204,6 +217,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: false
@@ -214,6 +228,7 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
@@ -321,6 +336,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
+          scanners: vuln
           # By digest, not tag. Scanning a tag leaves a window where it could be
           # repointed between the scan and the deploy.
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
@@ -340,6 +356,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
+          scanners: vuln
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
           format: table
           severity: CRITICAL,HIGH
@@ -350,6 +367,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
+          scanners: vuln
           image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
           format: table
           severity: CRITICAL,HIGH
