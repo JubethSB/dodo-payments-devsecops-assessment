@@ -40,9 +40,28 @@ env:
   APP_DIR: task-1-workload-hardening/app-source/app
   HARDENED_DOCKERFILE: task-1-workload-hardening/app-image/Dockerfile
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# Concurrency deliberately left off.
+#
+# The obvious setting here is:
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.ref }}
+#     cancel-in-progress: true
+#
+# It was removed after four consecutive runs were cancelled roughly 45 seconds
+# in, always with the fast job (gitleaks, ~20s) succeeding and every slower job
+# cancelled mid-step. The jobs shut down cleanly with no error, which is what an
+# external cancellation looks like.
+#
+# On a busy shared branch, cancel-in-progress saves runner minutes. On a
+# release pipeline that signs artifacts it is the wrong default: a run cancelled
+# between "image pushed" and "image signed" leaves an unsigned image in the
+# registry, which is exactly the state Task 1's Kyverno policy is meant to
+# reject. Completing a superseded run costs a few minutes; a half-finished
+# supply-chain run costs you the guarantee.
+#
+# If runner minutes ever matter here, the right form is a queue rather than a
+# kill: `cancel-in-progress: false`, so runs serialise instead of interrupting
+# each other partway through signing.
 
 jobs:
   # Gate 1: secrets. Hard block on anything, no warn mode.
