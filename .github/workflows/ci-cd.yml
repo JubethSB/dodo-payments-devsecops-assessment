@@ -263,10 +263,25 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.img.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
+
+      # GHCR requires a lowercase repository path, and github.repository_owner
+      # preserves the account's original case ("JubethSB"). docker/metadata-action
+      # lowercases it for the tags it generates, so the push succeeds, but any
+      # reference assembled by hand from the env var does not and fails with
+      # "repository name must be lowercase".
+      #
+      # Computed once here and published as a job output so every downstream job
+      # uses the same string. Expressions cannot lowercase, so it has to happen
+      # in a shell step.
+      - name: Compute the lowercase image reference
+        id: img
+        run: |
+          echo "ref=${REGISTRY}/$(echo "${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       # No registry login on pull_request. A PR from a fork must not be able to
       # push. The build still runs and the gates still apply, it just isn't
@@ -283,7 +298,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ needs.build.outputs.image }}
           # Immutable tags only. Task 1's Kyverno policy rejects :latest at
           # admission anyway, and a mutable tag makes the signature meaningless
           # because you can't say which bytes were signed.
@@ -327,8 +342,9 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REF: ${{ steps.img.outputs.ref }}
         run: |
-          IMAGE="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          IMAGE="${IMAGE_REF}@${DIGEST}"
           UID_OUT="$(docker run --rm --entrypoint sh "$IMAGE" -c 'id -u')"
           echo "image runs as uid=${UID_OUT}"
           if [ "$UID_OUT" = "0" ]; then
@@ -358,7 +374,7 @@ jobs:
           scanners: vuln
           # By digest, not tag. Scanning a tag leaves a window where it could be
           # repointed between the scan and the deploy.
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
           format: sarif
           output: trivy-image.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -376,7 +392,7 @@ jobs:
         with:
           scan-type: image
           scanners: vuln
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: false
@@ -409,7 +425,7 @@ jobs:
           scan-type: image
           scanners: vuln
           vuln-type: library
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
@@ -422,7 +438,7 @@ jobs:
           scan-type: image
           scanners: vuln
           vuln-type: os
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image-ref: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
@@ -462,27 +478,30 @@ jobs:
       - name: Sign by digest
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
-        run: cosign sign --yes "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+          IMAGE_REF: ${{ needs.build.outputs.image }}
+        run: cosign sign --yes "${IMAGE_REF}@${DIGEST}"
 
       - name: Generate SBOM (SPDX)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build.outputs.digest }}
+          image: ${{ needs.build.outputs.image }}@${{ needs.build.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
 
       - name: Attach the SBOM as a signed attestation
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
         run: |
           cosign attest --yes \
             --predicate sbom.spdx.json \
             --type spdxjson \
-            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
+            "${IMAGE_REF}@${DIGEST}"
 
       - name: Verify
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
           REPO: ${{ github.repository }}
           REF: ${{ github.ref }}
         run: |
@@ -492,11 +511,12 @@ jobs:
           cosign verify \
             --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/.+@${REF}$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" | tee cosign-verify.txt
+            "${IMAGE_REF}@${DIGEST}" | tee cosign-verify.txt
 
       - name: Verify the SBOM attestation
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
           REPO: ${{ github.repository }}
           REF: ${{ github.ref }}
         run: |
@@ -504,7 +524,7 @@ jobs:
             --type spdxjson \
             --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/.+@${REF}$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" > /dev/null
+            "${IMAGE_REF}@${DIGEST}" > /dev/null
           echo "SBOM attestation verified"
 
       - name: Publish evidence
@@ -531,17 +551,19 @@ jobs:
       - name: Pin the deployment to the signed digest
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
         run: |
           MANIFEST=task-2-cicd-supply-chain/gitops/ledger-api-deployment.yaml
           # Digest, not tag. This is the exact artifact that was scanned and
           # signed; a tag could be repointed afterwards.
-          sed -i -E "s|image: .*/ledger-api@sha256:[a-f0-9]+|image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}|" "$MANIFEST"
-          sed -i -E "s|image: .*/ledger-api:[^@[:space:]]+$|image: ${REGISTRY}/${IMAGE_NAME}@${DIGEST}|" "$MANIFEST"
+          sed -i -E "s|image: .*/ledger-api@sha256:[a-f0-9]+|image: ${IMAGE_REF}@${DIGEST}|" "$MANIFEST"
+          sed -i -E "s|image: .*/ledger-api:[^@[:space:]]+$|image: ${IMAGE_REF}@${DIGEST}|" "$MANIFEST"
           git diff --stat
 
       - name: Commit if changed
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          IMAGE_REF: ${{ needs.build.outputs.image }}
           RUN_ID: ${{ github.run_id }}
         run: |
           if git diff --quiet; then
