@@ -285,9 +285,16 @@ jobs:
       - name: Check the image isn't root
         # Cheap, and it turns a confusing admission rejection later into an
         # obvious build failure now.
+        #
+        # DIGEST arrives through env:, not interpolated straight into the
+        # script. Semgrep's run-shell-injection rule flagged the inline form and
+        # it was right: a ${{ }} expression is expanded before bash ever parses
+        # the line, so it is a script-injection sink. env: passes it as data.
         if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          IMAGE="${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+          IMAGE="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
           UID_OUT="$(docker run --rm --entrypoint sh "$IMAGE" -c 'id -u')"
           echo "image runs as uid=${UID_OUT}"
           if [ "$UID_OUT" = "0" ]; then
@@ -405,22 +412,26 @@ jobs:
       - name: Verify
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
         run: |
           # Pin identity AND issuer. "Signed by somebody" is worthless since
           # anyone can get a Fulcio cert; what matters is that it was signed by
           # this workflow in this repo.
           cosign verify \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/.+@${{ github.ref }}$" \
+            --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/.+@${REF}$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" | tee cosign-verify.txt
 
       - name: Verify the SBOM attestation
         env:
           DIGEST: ${{ needs.build.outputs.digest }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
         run: |
           cosign verify-attestation \
             --type spdxjson \
-            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/.+@${{ github.ref }}$" \
+            --certificate-identity-regexp "^https://github.com/${REPO}/\.github/workflows/.+@${REF}$" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "${REGISTRY}/${IMAGE_NAME}@${DIGEST}" > /dev/null
           echo "SBOM attestation verified"
@@ -458,6 +469,9 @@ jobs:
           git diff --stat
 
       - name: Commit if changed
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           if git diff --quiet; then
             echo "digest unchanged, nothing to commit"
@@ -466,8 +480,8 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add task-2-cicd-supply-chain/gitops/
-          git commit -m "gitops: pin ledger-api to ${{ needs.build.outputs.digest }}
+          git commit -m "gitops: pin ledger-api to ${DIGEST}
 
-          Built, scanned and signed by run ${{ github.run_id }}.
+          Built, scanned and signed by run ${RUN_ID}.
           [skip ci]"
           git push

@@ -258,6 +258,52 @@ Security tab and a GHCR package. Nothing else needs changing.
 | 6 | Base image still EOL | Deliberate, see Task 1. Most of the 149 fixable CVEs are base-image packages, so a supported base would take that close to zero |
 | 7 | No branch protection | The gates only really bind if `main` requires them to pass. Worth a ruleset requiring all four checks plus review |
 
+## What the first real pipeline run found
+
+Local validation caught a lot, but the first run against GitHub's runners
+surfaced three more things that only show up in CI.
+
+**1. `aquasecurity/trivy-action@0.28.0` does not exist.** Valid tags start at
+`0.31.0`. The version had never been checked against the upstream release list,
+and nothing local catches that because the action is only resolved by Actions
+itself. Pinned to `0.35.0`.
+
+**2. `gitleaks-action@v2` fails the job for a reason unrelated to its
+findings.** It crashes with `File results.sarif does not exist` while uploading
+its artifact, so the gate goes red even when the scan is clean. That is worse
+than a broken gate: a check that fails for incidental reasons trains people to
+ignore it, and then it is useless on the day it matters.
+
+Replaced with the gitleaks container invoked directly. As a side benefit, CI now
+runs the exact command `verify-gates.sh` runs locally, so the two cannot drift.
+
+**3. Semgrep blocked, correctly, and that created a real design problem.**
+
+It found 6 ERROR-severity findings in `app-source/`: the `yaml.load()` without
+SafeLoader, the unvalidated `requests.get` SSRF sink, and the cleartext PANs.
+The gate did exactly what it should.
+
+The problem is that those findings cannot be fixed. They are the authorised
+target for Task 4's penetration test, so removing them deletes the thing the
+pen test exists to find. Blocking on them leaves the pipeline permanently red
+with no action that turns it green, which is precisely how a gate ends up
+switched off.
+
+This is the same shape as the unfixed-CVE question, and it gets the same answer:
+
+- The SARIF scan still covers the **whole repo**, so all 6 findings appear in
+  the Security tab.
+- The **blocking** step excludes one directory, `app-source/`.
+- A separate step prints what the exclusion skipped, so it is a documented
+  decision rather than a silent hole.
+- New code anywhere else still hard-blocks on ERROR.
+
+The distinction that makes this defensible is that it excludes a **path**, not a
+rule and not a severity. Downgrading the rule or dropping the severity
+threshold would have made the gate weaker everywhere; excluding one known,
+documented directory leaves it at full strength for everything that is actually
+under development.
+
 ## Bugs I hit while validating this
 
 I'm listing these because they're the reason `verify-gates.sh` runs negative

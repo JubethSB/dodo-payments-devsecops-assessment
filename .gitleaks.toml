@@ -43,12 +43,12 @@ paths = [
   #
   # Scoped to the single file, not the directory, not the rule. The same
   # string committed anywhere else still fails the build.
-  '''task-1-workload-hardening/app-source/deploy/deployment\.yaml$'''.
+  '''task-1-workload-hardening/app-source/deploy/deployment\.yaml$''',
   # 2. Generated evidence transcripts
   # These capture tool output verbatim, which reproduces the fake key from the
   # admission rejection messages. Generated artifacts, not source.
   '''task-1-workload-hardening/evidence/[^/]+\.txt$''',
-  '''task-2-cicd-supply-chain/evidence/[^/]+\.(txt|json)$'''.
+  '''task-2-cicd-supply-chain/evidence/[^/]+\.(txt|json)$''',
   # 3. SealedSecret manifests
   # Entropy detection flags these (measured 5.95 on ours) because an
   # encryptedData blob is by construction indistinguishable from a high-entropy

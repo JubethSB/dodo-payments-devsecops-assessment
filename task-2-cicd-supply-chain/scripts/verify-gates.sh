@@ -41,6 +41,20 @@ gitleaks_scan() {
 
 sec "GATE 1: secrets scan (gitleaks)"
 
+# Parse the config before doing anything else. A malformed .gitleaks.toml makes
+# gitleaks exit 1 with "unable to load gitleaks config", which looks identical
+# to a failing gate in CI logs but means the scan never ran at all.
+#
+# This is not hypothetical: a bulk punctuation edit once turned two array
+# separators in that file from "," into ".", and the breakage only surfaced on
+# a GitHub runner.
+if python -c "import tomllib,sys;tomllib.load(open('$HERE/.gitleaks.toml','rb'))" 2>/dev/null; then
+  ok ".gitleaks.toml is valid TOML"
+else
+  no ".gitleaks.toml does not parse; gitleaks will refuse to run"
+  python -c "import tomllib;tomllib.load(open('$HERE/.gitleaks.toml','rb'))" 2>&1 | tail -2
+fi
+
 out="$(gitleaks_scan)"
 if echo "$out" | grep -q "no leaks found"; then
   ok "clean tree scans clean"
