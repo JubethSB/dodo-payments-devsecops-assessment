@@ -298,7 +298,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ needs.build.outputs.image }}
+          # steps.img, not needs.build. A job cannot read its own `needs`
+          # outputs: inside this job that expression resolves to an empty
+          # string, the tag collapses to a bare "main", and Docker reads that
+          # as library/main on Docker Hub. The push then fails against
+          # auth.docker.io with "insufficient scopes", which looks like a
+          # credentials problem and is really a registry-you-never-meant-to-use
+          # problem.
+          images: ${{ steps.img.outputs.ref }}
           # Immutable tags only. Task 1's Kyverno policy rejects :latest at
           # admission anyway, and a mutable tag makes the signature meaningless
           # because you can't say which bytes were signed.
