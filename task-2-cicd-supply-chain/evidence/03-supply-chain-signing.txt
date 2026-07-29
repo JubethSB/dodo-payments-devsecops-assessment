@@ -1,17 +1,51 @@
-======================================================================
- EVIDENCE: supply chain, signed image and attestation
- Repo   : JubethSB/dodo-payments-devsecops-assessment
- Run    : unknown
-======================================================================
+========================================================================
+ EVIDENCE: cosign keyless signature, verified
+ Run   : https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/runs/30419696929
+========================================================================
 
-Workflow jobs:
-  (unavailable)
+WHAT THE SIGNATURE ASSERTS
+------------------------------------------------------------------------
+  image ref      : ghcr.io/jubethsb/ledger-api
+  image digest   : sha256:63ff99c483aad289df43c5ff5f6e0ef8c2580a74f5732d8abc14453aefba79b1
 
---- cosign verify (from the sign-and-attest job) ---
-  artifact not available (the signing job may not have run)
+  signed by      : https://github.com/JubethSB/dodo-payments-devsecops-assessment/.github/workflows/ci-cd.yml@refs/heads/main
+  OIDC issuer    : https://token.actions.githubusercontent.com
+  workflow       : ci-cd
+  repository     : JubethSB/dodo-payments-devsecops-assessment
+  git ref        : refs/heads/main
+  commit         : da7d7a74811152e915cd60b2d46c18e4a7a49828
+  trigger        : push
 
---- verify locally against the published image ---
-cosign verify \
-  --certificate-identity-regexp "^https://github.com/JubethSB/dodo-payments-devsecops-assessment/\.github/workflows/.+@refs/heads/main$" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  ghcr.io/JubethSB/ledger-api:<tag>
+REKOR TRANSPARENCY LOG (publicly auditable)
+------------------------------------------------------------------------
+  logIndex       : 2279152789
+  integratedTime : 1785295891
+  logID          : c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d
+  lookup         : https://search.sigstore.dev/?logIndex=2279152789
+
+SBOM ATTESTATION
+------------------------------------------------------------------------
+  SPDX document with 135 packages, attached with cosign attest and
+  verified in the same job (cosign verify-attestation --type spdxjson).
+
+WHY THE IDENTITY FIELDS ARE THE POINT
+------------------------------------------------------------------------
+  Anyone can obtain a Fulcio certificate and sign anything, so 'this image
+  is signed' means nothing by itself. What matters is the Subject above: the
+  signature is bound to one workflow file, on one ref, in one repository.
+  Verification pins that identity AND the OIDC issuer, which is exactly what
+  Task 1's Kyverno policy checks at admission.
+
+  No signing key exists to steal. The private key lived for the duration of
+  the job and was never written to disk.
+
+  Note also what the signature does NOT say: nothing about CVEs. That is the
+  scan gate's job, which is why it runs first and separately.
+
+VERIFY IT YOURSELF
+------------------------------------------------------------------------
+  cosign verify \
+    --certificate-identity-regexp \
+      '^https://github.com/JubethSB/dodo-payments-devsecops-assessment/[.]github/workflows/.+@refs/heads/main$' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    ghcr.io/jubethsb/ledger-api@sha256:63ff99c483aad289df43c5ff5f6e0ef8c2580a74f5732d8abc14453aefba79b1

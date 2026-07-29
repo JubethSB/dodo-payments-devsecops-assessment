@@ -6,9 +6,25 @@ and GitOps with drift detection.
 
 Pipeline: [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml)
 
-**Status: built and locally validated, but not yet executed.** There's no
-GitHub remote on this repo yet, so the workflow has never run. See the last
-section.
+**Status: running green end to end.**
+[Run 30419696929](https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/runs/30419696929)
+— all seven jobs pass, the image is built and pushed to GHCR, signed with
+cosign keyless, and the digest is committed back to `gitops/`.
+
+Proof, all verifiable by anyone:
+
+| | |
+|---|---|
+| Signed image | `ghcr.io/jubethsb/ledger-api@sha256:63ff99c4…` |
+| Signed by | `…/.github/workflows/ci-cd.yml@refs/heads/main` |
+| OIDC issuer | `https://token.actions.githubusercontent.com` |
+| Rekor entry | [logIndex 2279152789](https://search.sigstore.dev/?logIndex=2279152789) |
+| SBOM | SPDX, 135 packages, attached via `cosign attest` |
+| Security tab | 100 alerts (6 critical, 11 high) |
+| GitOps commit | `6641d1f gitops: pin ledger-api to sha256:63ff99c4…` |
+
+Still outstanding: the ArgoCD drift/self-heal demo, which needs a local cluster
+(see the last section).
 
 ## Pipeline shape
 

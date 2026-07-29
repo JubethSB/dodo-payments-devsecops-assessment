@@ -1,7 +1,24 @@
 ======================================================================
- EVIDENCE: SARIF uploads in the Security tab
+ EVIDENCE: SARIF uploads in the GitHub Security tab
+ Repo: JubethSB/dodo-payments-devsecops-assessment
 ======================================================================
 
-{"message":"no analysis found","documentation_url":"https://docs.github.com/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository","status":"404"}(code scanning not populated yet, or the runs are still in progress)
+Alerts by scanner:
+  Trivy: 100 open alerts
+
+By severity:
+  critical: 6
+  high: 11
+  low: 33
+  medium: 43
+  note: 7
+
+Sample findings:
+  [Trivy] CVE-2024-5569 -> usr/local/lib/python3.6/site-packages/zipp-3.6.0.dist-info/METADATA
+  [Trivy] CVE-2025-50181 -> usr/local/lib/python3.6/site-packages/urllib3-1.23.dist-info/METADATA
+  [Trivy] CVE-2024-37891 -> usr/local/lib/python3.6/site-packages/urllib3-1.23.dist-info/METADATA
+  [Trivy] CVE-2023-45803 -> usr/local/lib/python3.6/site-packages/urllib3-1.23.dist-info/METADATA
+  [Trivy] CVE-2020-26137 -> usr/local/lib/python3.6/site-packages/urllib3-1.23.dist-info/METADATA
+  [Trivy] CVE-2019-11236 -> usr/local/lib/python3.6/site-packages/urllib3-1.23.dist-info/METADATA
 
 Browse: https://github.com/JubethSB/dodo-payments-devsecops-assessment/security/code-scanning
