@@ -1,0 +1,150 @@
+# Istio control plane for the ledger mesh.
+#
+# Applied with:  istioctl install -f istio/00-istio-install.yaml
+#
+# Every non-default value below exists for a reason specific to this cluster.
+# The two that matter most are the CNI component and the istiod memory request.
+#
+# ---------------------------------------------------------------------------
+# WHY istio-cni IS NOT OPTIONAL HERE
+# ---------------------------------------------------------------------------
+# Default sidecar injection adds an `istio-init` init container that programs
+# the pod's iptables to redirect traffic through Envoy. That requires NET_ADMIN
+# and NET_RAW.
+#
+# The `payments` namespace enforces Pod Security Standards `restricted`
+# (task-1/manifests/base/00-namespace.yaml), which permits adding no capability
+# except NET_BIND_SERVICE. Task 1's Kyverno policy require-drop-all-capabilities
+# rejects it independently, at Enforce.
+#
+# So a default Istio install cannot inject into this namespace at all. The
+# admission rejection is correct behaviour, not an obstacle to route around.
+#
+# Three ways out, and why this one:
+#
+#   1. Relax `payments` to `baseline`.  Rejected. That undoes the central
+#      control of Task 1 so that Task 3 is easier to install. Weakening a
+#      security boundary to fit a tool is exactly the trade this assessment
+#      is testing for.
+#
+#   2. Ambient mode (ztunnel, no sidecars).  Genuinely attractive: no per-pod
+#      proxy, lower memory, and no CAP_NET_ADMIN in the app pod either. Not
+#      chosen because L7 authorization still needs waypoint proxies, and
+#      `istioctl authn tls-check` and the per-workload cert inspection that
+#      Task 3 asks to evidence are sidecar-shaped. Worth revisiting.
+#
+#   3. istio-cni.  Chosen. Moves iptables programming out of the pod and into
+#      a privileged DaemonSet in `istio-system`, which runs once per node
+#      instead of once per pod. App pods get no elevated capabilities, so
+#      `payments` keeps `restricted` and Task 1 stands unmodified.
+#
+#      The honest cost: the privilege did not disappear, it moved. The CNI
+#      agent is a node-level component that can rewrite any pod's networking.
+#      That is a better place for it (one audited component in a namespace
+#      only cluster admins can write to, rather than a capability grant
+#      duplicated into every workload), but it is a relocation of trust and
+#      should be described that way.
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: ledger-mesh
+  namespace: istio-system
+spec:
+  # `minimal` installs istiod and nothing else: no ingress or egress gateway.
+  # The ingress gateway is added deliberately in the bonus step so that the
+  # mesh boundary is drawn on purpose rather than inherited from a profile.
+  profile: minimal
+
+  components:
+    cni:
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 64Mi
+
+    pilot:
+      k8s:
+        resources:
+          requests:
+            # Istio's DEFAULT istiod request is cpu 500m / memory 2048Mi.
+            # This node has 3.47 GiB allocatable in total. Accepting the
+            # default would reserve well over half the node for a control
+            # plane serving four proxies, and would likely leave the ingress
+            # gateway and the demo pods unschedulable.
+            #
+            # A request is a scheduling reservation, not a consumption
+            # measurement. Measured istiod RSS on a mesh this size is
+            # ~120-150 MB, so 256Mi requested / 512Mi capped is generous
+            # while staying honest about what it actually uses.
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            memory: 512Mi
+        env:
+          # One replica, no autoscaling: a single-node cluster cannot satisfy
+          # a PodDisruptionBudget or spread replicas anyway.
+          - name: PILOT_ENABLE_STATUS
+            value: "true"
+        hpaSpec:
+          minReplicas: 1
+          maxReplicas: 1
+
+  values:
+    cni:
+      # k3s does NOT use the upstream CNI directories. It ships its own
+      # binaries and writes its config under /var/lib/rancher. Pointing the
+      # CNI installer at the standard /opt/cni/bin here produces a DaemonSet
+      # that starts cleanly and silently fails to redirect any traffic, which
+      # then looks like an mTLS problem rather than an install problem.
+      #
+      # scripts/install-istio.sh verifies these paths against the running node
+      # before installing, and fails loudly if they do not match.
+      cniBinDir: /bin
+      cniConfDir: /var/lib/rancher/k3s/agent/etc/cni/net.d
+
+    global:
+      proxy:
+        resources:
+          requests:
+            # Task 1's Kyverno policy require-resource-limits demands
+            # requests.cpu, requests.memory AND limits.memory on EVERY
+            # container in `payments`. Kyverno applies a list pattern to all
+            # elements, so the injected sidecar is held to the same rule as
+            # the application container. Istio's defaults would satisfy it,
+            # but its default 1024Mi limit x4 proxies overcommits this node
+            # badly, so these are trimmed to measured reality (~50-70 MB RSS).
+            cpu: 10m
+            memory: 48Mi
+          limits:
+            memory: 128Mi
+
+  meshConfig:
+    # Envoy access logs to stdout. Without this the mesh denies traffic
+    # silently, and an AuthorizationPolicy denial is indistinguishable from
+    # the upstream being down. Task 3 has to EVIDENCE a denial, so the log
+    # line carrying the RBAC verdict is the artifact, not a nice-to-have.
+    accessLogFile: /dev/stdout
+    accessLogEncoding: JSON
+
+    defaultConfig:
+      # Do not start the application container until Envoy is ready to proxy.
+      # Without this, a container that makes an outbound call at startup races
+      # the sidecar and fails intermittently. That produces flaky evidence,
+      # and flaky evidence in a security writeup is worse than none.
+      holdApplicationUntilProxyStarts: true
+
+    # Deny egress to anything not declared in the mesh registry. The default,
+    # ALLOW_ANY, lets a compromised pod dial any host it can resolve, which
+    # is precisely the exfiltration path a CDE boundary is supposed to close.
+    #
+    # The trade is real: any genuine external dependency now needs an explicit
+    # ServiceEntry, and the failure mode when you forget is a confusing
+    # connection error rather than a clear policy message. For a namespace
+    # holding cardholder data that is the correct side of the trade, and it
+    # makes the egress surface an explicit, reviewable list.
+    outboundTrafficPolicy:
+      mode: REGISTRY_ONLY

@@ -1,0 +1,132 @@
+======================================================================
+ EVIDENCE: three environment faults found before Istio was installed
+======================================================================
+
+Task 3 needs a cluster that stays alive without supervision. This one
+did not, and the reason was not the one the symptoms suggested. Recorded
+here because the misdiagnosis is the interesting part.
+
+----------------------------------------------------------------------
+ FAULT 1 - a dead kind node was consuming a fifth of the VM
+----------------------------------------------------------------------
+
+  docker stats showed:
+
+    NAME                       MEM USAGE / LIMIT     CPU %
+    k3d-ledger-serverlb        1.547MiB / 3.467GiB   4.97%
+    ledger-api-control-plane   674.2MiB / 3.467GiB   181.35%
+
+  ledger-api-control-plane is a kindest/node:v1.30.0 container, left
+  over from the kind attempt that was abandoned because it could not
+  reach systemd's multi-user target on this VM. It was never removed,
+  and it was still burning 674 MB and ~180% CPU.
+
+  Stopping it was not enough. It came back:
+
+    policy=on-failure/1   exit=128
+
+  Docker was restarting it. The restart policy had to be cleared first:
+
+    docker update --restart=no ledger-api-control-plane
+    docker stop ledger-api-control-plane
+
+  Reversible. To bring it back:
+
+    docker update --restart=on-failure:1 ledger-api-control-plane
+    docker start ledger-api-control-plane
+
+  Effect: available memory in the WSL VM went from 2433 MB to 3065 MB.
+
+----------------------------------------------------------------------
+ FAULT 2 - the WSL utility VM was shutting down every 60 seconds
+----------------------------------------------------------------------
+
+  This is the one that mattered, and it does not look like what it is.
+
+  What it looked like:
+
+    - k3s exiting with code 128 and
+        "unable to apply cgroup configuration: unable to start unit
+         docker-<id>.scope ... error creating systemd unit: got `failed`"
+      which reads like a resource limit or a wedged systemd
+    - `docker ps` reporting containers "Up 2 seconds", every time
+    - restart policies apparently not firing
+    - journal corruption warnings on boot
+
+  What it actually was:
+
+    $ docker inspect k3d-ledger-server-0 --format \
+        'exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{.State.Error}}'
+      exit=0 oom=false error=
+
+    started  2026-07-29T04:53:41Z
+    finished 2026-07-29T04:54:23Z      <- 42s later, clean exit, no error
+
+  Exit code 0 with an empty error string is not a crash. It is a clean
+  SIGTERM. Something was stopping the container deliberately.
+
+  Confirmed by watching for two minutes inside a single WSL invocation:
+  the node stayed `exited` the whole time and `unless-stopped` never
+  fired - because the container was not what had gone away, the entire
+  virtual machine had.
+
+    $ Get-Process 'Docker Desktop'
+      (no output)
+
+  There was no Docker Desktop backend process. The engine ran only
+  inside the `docker-desktop` WSL distro, started on demand. And there
+  was no %USERPROFILE%\.wslconfig, so vmIdleTimeout sat at its 60000 ms
+  default: sixty seconds after the last WSL handle closed, the utility
+  VM shut down and took the Docker daemon and every container with it.
+
+  Every reading of "Up 2 seconds" was the VM being resumed by the very
+  command that was measuring it. The exit=128 cgroup error was a
+  half-resumed VM, not a resource ceiling.
+
+  FIX - %USERPROFILE%\.wslconfig:
+
+    [wsl2]
+    vmIdleTimeout=-1
+
+  Applied with `wsl --shutdown`, then Docker Desktop started so that
+  something owns the VM lifecycle.
+
+  Memory was deliberately left unpinned. The WSL default of 50% of host
+  RAM gives ~3.5 GB on this 7.28 GB machine, and the measured Istio
+  footprint fits inside it (see 01-istio-memory-budget.txt).
+
+----------------------------------------------------------------------
+ FAULT 3 - the cluster had drifted from what Tasks 1 and 2 declare
+----------------------------------------------------------------------
+
+  reporting was gone from the cluster entirely - no Deployment, no
+  Service, no ConfigMap. Task 3 needs it as the AUTHORISED caller in the
+  AuthorizationPolicy demo, so it had to be restored.
+
+  ledger-api was running 5 replicas where git declares 2. This is not
+  ArgoCD failing. It is task-2/argocd/application.yaml working as
+  written:
+
+    ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+          - /spec/replicas
+
+  That entry exists so ArgoCD and a HorizontalPodAutoscaler do not fight
+  over replica count. The cost, correctly, is that ArgoCD will also not
+  correct a manual scale of that field. Worth stating plainly: an
+  ignoreDifferences entry is a hole in drift detection that you have
+  chosen on purpose, and it should be narrow enough to justify.
+
+  Both restored in scripts/restore-baseline.sh.
+
+----------------------------------------------------------------------
+ WHY THIS IS IN THE EVIDENCE DIRECTORY
+----------------------------------------------------------------------
+
+  None of it is about Istio. But "the cluster keeps dying" was going to
+  be blamed on Istio's memory footprint the moment sidecars appeared,
+  and it would have been the wrong culprit. Establishing that the VM was
+  the problem BEFORE installing anything is what makes the memory
+  numbers in 01-istio-memory-budget.txt trustworthy.
