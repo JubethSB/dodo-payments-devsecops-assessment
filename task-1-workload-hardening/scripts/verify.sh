@@ -57,6 +57,19 @@ NS=payments
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export MSYS_NO_PATHCONV=1   # stop Git Bash rewriting in-container paths
 
+# k3d publishes the API server on a fresh random host port after every cluster
+# restart, so the kubeconfig goes stale and kubectl fails with "connection
+# refused" against the old port. Repoint it at the current port before doing
+# anything, so this script works on a just-restarted cluster without a manual
+# fix. Best-effort: if the cluster isn't a local k3d one, leave the context as-is.
+if command -v docker >/dev/null 2>&1; then
+  _api_port="$(docker port k3d-ledger-serverlb 6443/tcp 2>/dev/null | head -1 | sed 's/.*://')"
+  if [ -n "$_api_port" ]; then
+    kubectl config set-cluster k3d-ledger --server="https://127.0.0.1:${_api_port}" >/dev/null 2>&1 || true
+    kubectl config use-context k3d-ledger >/dev/null 2>&1 || true
+  fi
+fi
+
 pass=0; fail=0
 ok()   { printf '  \033[1;32mPASS\033[0m  %s\n' "$*"; pass=$((pass+1)); }
 no()   { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*"; fail=$((fail+1)); }
