@@ -46,6 +46,65 @@ kubectl config use-context "k3d-${CLUSTER}" >/dev/null
 RESULTS=0
 
 # ---------------------------------------------------------------------------
+# PRECONDITION GATE
+# ---------------------------------------------------------------------------
+# Refuse to run if the workloads are not actually meshed.
+#
+# This gate exists because of a real failure: pods were created with no sidecar
+# and no error surfaced anywhere. The cause was istio-cni installed into a
+# directory kubelet does not read, so every pod sandbox failed with
+# "failed to find plugin istio-cni" while the CNI DaemonSet reported Running.
+#
+# Without this check the script happily continued and produced evidence claiming
+# "authorised caller got 200" - which was true, and completely meaningless,
+# because the request had gone to a leftover pod that was never in the mesh.
+# Evidence produced against an unmeshed workload is worse than no evidence: it
+# looks like a passing result.
+# NOTE ON WHERE THE SIDECAR LIVES.
+#
+# Istio 1.30 injects the proxy as a NATIVE SIDECAR: an entry in
+# .spec.initContainers with restartPolicy: Always, not in .spec.containers.
+# That is the Kubernetes 1.29+ sidecar mechanism, and meshConfig's
+# holdApplicationUntilProxyStarts: true selects it.
+#
+# Counting only .spec.containers reports zero sidecars on a perfectly healthy
+# mesh. That cost a debugging cycle here - the mesh was working and the check
+# was wrong - so both fields are searched.
+log "0. Precondition: workloads are actually in the mesh"
+count_meshed() {
+  kubectl -n "$NS" get pods -o \
+    jsonpath='{range .items[*]}{.spec.containers[*].name}{" "}{.spec.initContainers[*].name}{"\n"}{end}' 2>/dev/null \
+    | grep -c istio-proxy || true
+}
+for i in $(seq 1 30); do
+  TOTAL="$(kubectl -n "$NS" get pods --no-headers 2>/dev/null | wc -l)"
+  MESHED="$(count_meshed)"
+  READY="$(kubectl -n "$NS" get pods --no-headers 2>/dev/null | awk '$2 ~ /^([0-9]+)\/\1$/' | wc -l)"
+  [ "${MESHED:-0}" -ge 3 ] && [ "${READY:-0}" -ge 3 ] && break
+  sleep 10
+done
+echo "    pods=$TOTAL  with-sidecar=$MESHED  fully-ready=$READY"
+kubectl -n "$NS" get pods -o custom-columns=\
+'NAME:.metadata.name,INIT:.spec.initContainers[*].name,CONTAINERS:.spec.containers[*].name,READY:.status.containerStatuses[*].ready'
+
+if [ "${MESHED:-0}" -lt 3 ]; then
+  echo
+  warn "Fewer than 3 pods carry an istio-proxy container."
+  warn ""
+  warn "Check the pod events first - the most likely cause is a CNI path"
+  warn "mismatch, which presents as pods stuck with no IP:"
+  warn "    kubectl -n $NS describe pod <name> | grep -A3 FailedCreatePodSandBox"
+  warn "If you see 'failed to find plugin istio-cni in path [...]', the"
+  warn "cniBinDir in istio/00-istio-install.yaml does not match the directory"
+  warn "kubelet reads. Correct it and re-run ./scripts/install-istio.sh."
+  warn ""
+  warn "If injection is simply stale, re-trigger it with:"
+  warn "    kubectl -n $NS rollout restart deploy/ledger-api deploy/reporting deploy/unauthorised-client"
+  die "refusing to generate evidence against unmeshed workloads"
+fi
+pass "all workloads carry a sidecar"
+
+# ---------------------------------------------------------------------------
 log "1. Sidecars are present and the Task 1 hardening survived injection"
 # ---------------------------------------------------------------------------
 {
@@ -53,9 +112,21 @@ log "1. Sidecars are present and the Task 1 hardening survived injection"
   echo " EVIDENCE: workloads joined the mesh without weakening Task 1"
   echo "======================================================================"
   echo
-  echo "\$ kubectl -n $NS get pods -o custom-columns=NAME,CONTAINERS"
+  echo "\$ kubectl -n $NS get pods -o custom-columns=NAME,INIT,CONTAINERS"
   kubectl -n "$NS" get pods -o custom-columns=\
-'NAME:.metadata.name,CONTAINERS:.spec.containers[*].name,READY:.status.containerStatuses[*].ready'
+'NAME:.metadata.name,INIT:.spec.initContainers[*].name,CONTAINERS:.spec.containers[*].name,READY:.status.containerStatuses[*].ready'
+  echo
+  echo "Note where istio-proxy appears: in initContainers, not containers."
+  echo "Istio 1.30 injects it as a Kubernetes NATIVE SIDECAR - an init container"
+  echo "with restartPolicy: Always - which is what meshConfig's"
+  echo "holdApplicationUntilProxyStarts: true selects. It starts before the"
+  echo "application container and keeps running alongside it."
+  echo
+  echo "This matters beyond trivia: it closes a real startup race. With a"
+  echo "classic sidecar, an application that makes an outbound call on startup"
+  echo "can beat Envoy to readiness and fail intermittently. As a native"
+  echo "sidecar the proxy is guaranteed ready first, so there is no window in"
+  echo "which a meshed workload sends unproxied traffic."
   echo
   echo "The namespace still enforces Pod Security Standards 'restricted':"
   kubectl get ns "$NS" -o jsonpath='  enforce={.metadata.labels.pod-security\.kubernetes\.io/enforce}{"\n"}'
@@ -73,7 +144,14 @@ log "1. Sidecars are present and the Task 1 hardening survived injection"
   echo "Injected sidecar securityContext, which Task 1's Kyverno policies"
   echo "evaluate identically to the application container:"
   kubectl -n "$NS" get pod -l app.kubernetes.io/name=ledger-api -o jsonpath=\
-'{range .items[0].spec.containers[?(@.name=="istio-proxy")]}  runAsUser:               {.securityContext.runAsUser}{"\n"}  readOnlyRootFilesystem: {.securityContext.readOnlyRootFilesystem}{"\n"}  allowPrivilegeEscalation:{.securityContext.allowPrivilegeEscalation}{"\n"}  capabilities.drop:      {.securityContext.capabilities.drop}{"\n"}  resources:              {.resources}{"\n"}{end}'
+'{range .items[0].spec.initContainers[?(@.name=="istio-proxy")]}  runAsUser:                {.securityContext.runAsUser}{"\n"}  runAsNonRoot:             {.securityContext.runAsNonRoot}{"\n"}  readOnlyRootFilesystem:   {.securityContext.readOnlyRootFilesystem}{"\n"}  allowPrivilegeEscalation: {.securityContext.allowPrivilegeEscalation}{"\n"}  capabilities.drop:        {.securityContext.capabilities.drop}{"\n"}  restartPolicy:            {.restartPolicy}{"\n"}  resources:                {.resources}{"\n"}{end}'
+  echo
+  echo "runAsUser 1337 with all capabilities dropped and a read-only root"
+  echo "filesystem. Task 1's require-drop-all-capabilities,"
+  echo "require-readonly-root-filesystem, disallow-privilege-escalation and"
+  echo "require-resource-limits are all Enforce and apply a list pattern to"
+  echo "EVERY container, so the sidecar had to satisfy them to be admitted at"
+  echo "all. Its presence in a Running pod is itself the proof that it did."
 } > "$EV/01-mesh-injection-preserves-hardening.txt" 2>&1
 cat "$EV/01-mesh-injection-preserves-hardening.txt"
 
@@ -86,10 +164,19 @@ log "2. mTLS STRICT: a plaintext caller is refused"
 kubectl get ns mesh-outsider >/dev/null 2>&1 || kubectl create ns mesh-outsider >/dev/null
 kubectl label ns mesh-outsider istio-injection- --overwrite >/dev/null 2>&1 || true
 
-kubectl -n mesh-outsider delete pod plaintext-caller --ignore-not-found >/dev/null 2>&1
+kubectl -n mesh-outsider delete pod plaintext-caller --ignore-not-found --wait=true >/dev/null 2>&1
 kubectl -n mesh-outsider run plaintext-caller \
-  --image=curlimages/curl:8.11.1 --restart=Never --command -- sleep 300 >/dev/null 2>&1
-kubectl -n mesh-outsider wait --for=condition=Ready pod/plaintext-caller --timeout=120s >/dev/null 2>&1
+  --image=curlimages/curl:8.11.1 --restart=Never --command -- sleep 600 >/dev/null 2>&1
+
+# Wait properly and fail loudly. Previously this wait was silenced, so when the
+# pod was not up in time the subsequent exec returned
+#   "unable to upgrade connection: container not found"
+# which the result parser then read as "not refused" - a false FAIL that looked
+# like a real security finding.
+if ! kubectl -n mesh-outsider wait --for=condition=Ready pod/plaintext-caller --timeout=180s >/dev/null 2>&1; then
+  kubectl -n mesh-outsider describe pod plaintext-caller 2>&1 | sed -n '/Events:/,$p' | head -15
+  die "the plaintext prover pod never became Ready; cannot test STRICT mTLS"
+fi
 
 LEDGER_IP="$(kubectl -n "$NS" get pod -l app.kubernetes.io/name=ledger-api \
               -o jsonpath='{.items[0].status.podIP}')"
@@ -131,10 +218,21 @@ PLAINTEXT_OUT="$(kubectl -n mesh-outsider exec plaintext-caller -- \
   fi
   echo
   echo "----------------------------------------------------------------------"
-  echo "istioctl's own view of the mTLS posture:"
+  echo "istioctl's own view of the mTLS posture"
   echo "----------------------------------------------------------------------"
-  istioctl authn tls-check "$(kubectl -n "$NS" get pod -l app.kubernetes.io/name=reporting -o jsonpath='{.items[0].metadata.name}')" \
-    -n "$NS" 2>&1 | head -20 || echo "(tls-check unavailable in this istioctl version)"
+  echo
+  echo "NOTE: 'istioctl authn tls-check' was REMOVED in Istio 1.x and does not"
+  echo "exist in $(istioctl version --remote=false 2>/dev/null). The equivalent"
+  echo "evidence now comes from the effective listener config and the workload's"
+  echo "issued certificate, which is stronger anyway - it shows what the proxy is"
+  echo "actually enforcing rather than a summary."
+  echo
+  RPOD="$(kubectl -n "$NS" get pod -l app.kubernetes.io/name=reporting -o jsonpath='{.items[0].metadata.name}')"
+  echo "\$ istioctl x describe pod $RPOD -n $NS"
+  istioctl x describe pod "$RPOD" -n "$NS" 2>&1 | head -25 || true
+  echo
+  echo "\$ istioctl proxy-config secret $RPOD -n $NS   (the workload certificate)"
+  istioctl proxy-config secret "$RPOD" -n "$NS" 2>&1 | head -10 || true
 } > "$EV/02-mtls-strict-refuses-plaintext.txt" 2>&1
 cat "$EV/02-mtls-strict-refuses-plaintext.txt"
 
@@ -155,9 +253,12 @@ except Exception as e:
     print(getattr(e, 'code', 'ERR'))
 " 2>/dev/null || echo ERR)"
 
+kubectl -n "$NS" wait --for=condition=Available deploy/unauthorised-client --timeout=180s >/dev/null 2>&1 \
+  || die "unauthorised-client is not Available; cannot test authorization"
+
 AUTH_DENY="$(kubectl -n "$NS" exec deploy/unauthorised-client -c client -- \
   curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
-  http://ledger-api:8080/transactions 2>&1 || echo ERR)"
+  http://ledger-api:8080/transactions 2>/dev/null || echo ERR)"
 
 sleep 3
 RBAC_LOG="$(kubectl -n "$NS" logs -l app.kubernetes.io/name=ledger-api -c istio-proxy --tail=200 2>/dev/null \

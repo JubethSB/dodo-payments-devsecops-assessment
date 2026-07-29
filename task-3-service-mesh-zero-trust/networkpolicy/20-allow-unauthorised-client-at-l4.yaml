@@ -1,0 +1,96 @@
+# DELIBERATELY permit unauthorised-client -> ledger-api at L3/L4.
+#
+# This looks backwards. It is the point.
+#
+# WHY THIS EXISTS
+# ---------------------------------------------------------------------------
+# Without it, the two layers agree, and that agreement HIDES the thing Task 3
+# is trying to prove.
+#
+# Observed on the first verification run: unauthorised-client -> ledger-api
+# returned HTTP 503, not the expected 403. The reason is layering. The CNI
+# enforces NetworkPolicy before Envoy ever sees a packet, so
+# `allow-ledger-api-ingress-from-reporting` (which names only reporting)
+# dropped the connection outright. The mesh never got to make a decision, and
+# the result proved only that a network rule works - which was never in doubt.
+#
+# That is the same diagnostic recorded in
+# evidence/05-networkpolicy-defence-in-depth.txt: a denial with no entry in the
+# sidecar access log was dropped BELOW the mesh.
+#
+# WHAT THIS RULE MAKES POSSIBLE
+# ---------------------------------------------------------------------------
+# By explicitly permitting this pod at the network layer, the ONLY control left
+# that can refuse it is the AuthorizationPolicy. So when the request is still
+# denied - now with HTTP 403 and an RBAC line in ledger-api's sidecar log - the
+# refusal is unambiguously attributable to workload identity.
+#
+# The demonstration becomes: the network says yes, the mesh says no.
+#
+# That is the exact capability a NetworkPolicy cannot provide. At L3/L4
+# unauthorised-client and reporting are indistinguishable - same namespace,
+# same node, same pod CIDR, both now explicitly permitted to reach port 8080.
+# Only the SPIFFE identity in the client certificate tells them apart.
+#
+# NOT A PRODUCTION RULE
+# ---------------------------------------------------------------------------
+# In a real deployment this pod would not exist and this rule would not be
+# written. It is test scaffolding whose purpose is to REMOVE a confounding
+# control so the remaining one can be measured on its own - the same reason an
+# experiment needs a control group. Keeping it in a separate, clearly-named
+# file rather than folding it into 10-allow-service-paths.yaml is deliberate:
+# nobody should apply it by accident while believing they are applying the
+# service allow-list.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # Lowercase only: Kubernetes object names must be RFC 1123 labels, so an
+  # uppercase "TEST-ONLY" suffix is rejected outright with
+  # "Invalid value: ... must consist of lower case alphanumeric characters".
+  name: allow-unauthorised-client-egress-test-only
+  namespace: payments
+  labels:
+    purpose: test-fixture
+  annotations:
+    description: >-
+      Test scaffolding. Permits the unauthorised caller at L3/L4 so that the
+      Istio AuthorizationPolicy is the only control able to refuse it, making
+      the identity-based denial observable as a 403 rather than being masked
+      by a CNI-level packet drop. Delete along with the unauthorised-client
+      Deployment.
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: unauthorised-client
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ledger-api-ingress-from-unauthorised-test-only
+  namespace: payments
+  labels:
+    purpose: test-fixture
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: unauthorised-client
+      ports:
+        - protocol: TCP
+          port: 8080

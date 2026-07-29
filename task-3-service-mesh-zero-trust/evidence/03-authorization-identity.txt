@@ -1,0 +1,46 @@
+======================================================================
+ EVIDENCE: authorization keyed on SPIFFE identity, not IP
+======================================================================
+
+Policies in force:
+NAME                            ACTION
+allow-reporting-to-ledger-api   ALLOW
+default-deny-all                <none>
+
+default-deny-all has an EMPTY spec. That is not a no-op: an ALLOW
+policy that selects every workload and permits no rule denies
+everything. allow-reporting-to-ledger-api then carves out exactly one
+caller, one method and two paths.
+
+----------------------------------------------------------------------
+AUTHORISED   reporting -> ledger-api /transactions
+----------------------------------------------------------------------
+  identity: spiffe://cluster.local/ns/payments/sa/reporting
+  result:   HTTP 200
+
+----------------------------------------------------------------------
+UNAUTHORISED unauthorised-client -> ledger-api /transactions
+----------------------------------------------------------------------
+  identity: spiffe://cluster.local/ns/payments/sa/unauthorised-client
+  result:   HTTP 403
+
+This pod is INSIDE the mesh and holds a valid certificate. It completed
+the mTLS handshake successfully and was refused on identity alone.
+
+That is the case no NetworkPolicy can express. Both pods run in the
+same namespace, on the same node, in the same pod CIDR:
+NAME                                   IP            SA
+ledger-api-5bd7cfb845-8tk2f            10.42.0.235   ledger-api
+ledger-api-5bd7cfb845-dzwmd            10.42.0.234   ledger-api
+reporting-7fb448476b-q49sg             10.42.0.233   reporting
+unauthorised-client-78f8b4fd9c-ndb9p   10.42.0.236   unauthorised-client
+
+At the packet level they are indistinguishable. Only the certificate
+tells them apart, and a pod cannot forge one: the private key is issued
+to its ServiceAccount and never leaves its sidecar.
+
+----------------------------------------------------------------------
+ledger-api sidecar log (the RBAC verdict)
+----------------------------------------------------------------------
+{"authority":"ledger-api:8080","bytes_received":0,"bytes_sent":19,"connection_termination_details":null,"downstream_local_address":"10.42.0.235:8080","downstream_remote_address":"10.42.0.236:35264","duration":0,"method":"GET","path":"/transactions","protocol":"HTTP/1.1","request_id":"6b6bbfa0-2c92-4fc6-951c-3e3f4e1688c5","requested_server_name":"outbound_.8080_._.ledger-api.payments.svc.cluster.local","response_code":403,"response_code_details":"rbac_access_denied_matched_policy[none]","response_flags":"-","route_name":"default","start_time":"2026-07-29T11:53:51.342Z","upstream_cluster":"inbound|8080||","upstream_host":null,"upstream_local_address":null,"upstream_service_time":null,"upstream_transport_failure_reason":null,"user_agent":"curl/8.11.1","x_forwarded_for":null}
+{"authority":"ledger-api:8080","bytes_received":0,"bytes_sent":19,"connection_termination_details":null,"downstream_local_address":"10.42.0.234:8080","downstream_remote_address":"10.42.0.236:33096","duration":8,"method":"GET","path":"/transactions","protocol":"HTTP/1.1","request_id":"dcc375d3-0973-4357-9f72-77fa035d6da2","requested_server_name":"outbound_.8080_._.ledger-api.payments.svc.cluster.local","response_code":403,"response_code_details":"rbac_access_denied_matched_policy[none]","response_flags":"-","route_name":"default","start_time":"2026-07-29T12:00:06.207Z","upstream_cluster":"inbound|8080||","upstream_host":null,"upstream_local_address":null,"upstream_service_time":null,"upstream_transport_failure_reason":null,"user_agent":"curl/8.11.1","x_forwarded_for":null}

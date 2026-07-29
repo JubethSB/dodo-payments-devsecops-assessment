@@ -86,17 +86,45 @@ docker exec "$NODE" test -d "$DECLARED_CONF" \
   || die "cniConfDir '$DECLARED_CONF' does not exist on $NODE. Inspect with:
     docker exec $NODE find / -name '*.conflist' -path '*cni*' 2>/dev/null"
 
-# A CNI bin dir is only correct if it actually holds plugin binaries.
-if docker exec "$NODE" sh -c "ls '$DECLARED_BIN' 2>/dev/null | grep -qE '^(portmap|bridge|loopback|host-local)$'"; then
-  echo "    cniBinDir contains CNI plugins  OK"
-else
-  warn "no CNI plugins found in '$DECLARED_BIN'. Candidates on this node:"
-  docker exec "$NODE" sh -c \
-    'for d in /bin /opt/cni/bin /var/lib/rancher/k3s/data/current/bin; do
-       [ -d "$d" ] && ls "$d" 2>/dev/null | grep -qE "^(portmap|bridge|loopback)$" && echo "  $d"
-     done' || true
-  die "update cniBinDir in istio/00-istio-install.yaml to one of the above"
+# Verify against the directory KUBELET loads plugins from, not merely a
+# directory that happens to contain some.
+#
+# This distinction is the whole point. /bin on a k3s node contains portmap,
+# bridge and loopback, so a "does this dir have CNI plugins?" check passes on
+# it - and it is still the wrong answer, because kubelet reads
+# /var/lib/rancher/k3s/data/cni. Installing istio-cni to the wrong directory
+# yields a healthy-looking DaemonSet and pods that can never get a sandbox:
+#
+#   failed to find plugin "istio-cni" in path [/var/lib/rancher/k3s/data/cni]
+#
+# Resolve the authoritative path from the running kubelet's own flags, and fall
+# back to probing only if that is unavailable.
+KUBELET_BIN_DIR="$(docker exec "$NODE" sh -c \
+  "cat /proc/\$(pgrep -f 'kubelet' | head -1)/cmdline 2>/dev/null | tr '\0' '\n' | sed -n 's/^--cni-bin-dir=//p'" 2>/dev/null | head -1)"
+
+if [ -z "$KUBELET_BIN_DIR" ]; then
+  # k3s embeds kubelet, so the flag may not be visible. Probe the known k3s
+  # location before the upstream default.
+  for d in /var/lib/rancher/k3s/data/cni /opt/cni/bin /bin; do
+    if docker exec "$NODE" sh -c "ls '$d' 2>/dev/null | grep -qE '^(portmap|bridge|loopback|host-local)$'"; then
+      KUBELET_BIN_DIR="$d"; break
+    fi
+  done
 fi
+echo "    kubelet loads plugins from: ${KUBELET_BIN_DIR:-<unknown>}"
+
+if [ -n "$KUBELET_BIN_DIR" ] && [ "$KUBELET_BIN_DIR" != "$DECLARED_BIN" ]; then
+  warn "cniBinDir mismatch."
+  warn "  declared: $DECLARED_BIN"
+  warn "  kubelet:  $KUBELET_BIN_DIR"
+  warn "istio-cni would install where kubelet never looks. Every pod sandbox"
+  warn "would then fail with 'failed to find plugin istio-cni in path ...',"
+  warn "while the CNI DaemonSet still reports Running and Ready."
+  die "set cniBinDir: $KUBELET_BIN_DIR in istio/00-istio-install.yaml"
+fi
+docker exec "$NODE" test -d "$DECLARED_BIN" \
+  || die "cniBinDir '$DECLARED_BIN' does not exist on $NODE"
+echo "    cniBinDir agrees with kubelet  OK"
 docker exec "$NODE" ls "$DECLARED_CONF" | sed 's/^/      /'
 
 # ---------------------------------------------------------------------------

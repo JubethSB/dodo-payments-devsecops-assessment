@@ -1,0 +1,48 @@
+======================================================================
+ EVIDENCE: workloads joined the mesh without weakening Task 1
+======================================================================
+
+$ kubectl -n payments get pods -o custom-columns=NAME,INIT,CONTAINERS
+NAME                                   INIT                           CONTAINERS   READY
+ledger-api-5bd7cfb845-8tk2f            istio-validation,istio-proxy   ledger-api   true
+ledger-api-5bd7cfb845-dzwmd            istio-validation,istio-proxy   ledger-api   true
+reporting-7fb448476b-q49sg             istio-validation,istio-proxy   reporting    true
+unauthorised-client-78f8b4fd9c-ndb9p   istio-validation,istio-proxy   client       true
+
+Note where istio-proxy appears: in initContainers, not containers.
+Istio 1.30 injects it as a Kubernetes NATIVE SIDECAR - an init container
+with restartPolicy: Always - which is what meshConfig's
+holdApplicationUntilProxyStarts: true selects. It starts before the
+application container and keeps running alongside it.
+
+This matters beyond trivia: it closes a real startup race. With a
+classic sidecar, an application that makes an outbound call on startup
+can beat Envoy to readiness and fail intermittently. As a native
+sidecar the proxy is guaranteed ready first, so there is no window in
+which a meshed workload sends unproxied traffic.
+
+The namespace still enforces Pod Security Standards 'restricted':
+  enforce=restricted
+
+No workload in payments requests NET_ADMIN or NET_RAW. Default Istio
+injection would need both, via an istio-init container, and PSS
+restricted would have rejected the pod. istio-cni moves that privilege
+to a node-level DaemonSet in istio-system instead:
+  confirmed: no elevated capabilities in payments
+
+Injected sidecar securityContext, which Task 1's Kyverno policies
+evaluate identically to the application container:
+  runAsUser:                1337
+  runAsNonRoot:             true
+  readOnlyRootFilesystem:   true
+  allowPrivilegeEscalation: false
+  capabilities.drop:        ["ALL"]
+  restartPolicy:            Always
+  resources:                {"limits":{"cpu":"2","memory":"128Mi"},"requests":{"cpu":"10m","memory":"48Mi"}}
+
+runAsUser 1337 with all capabilities dropped and a read-only root
+filesystem. Task 1's require-drop-all-capabilities,
+require-readonly-root-filesystem, disallow-privilege-escalation and
+require-resource-limits are all Enforce and apply a list pattern to
+EVERY container, so the sidecar had to satisfy them to be admitted at
+all. Its presence in a Running pod is itself the proof that it did.

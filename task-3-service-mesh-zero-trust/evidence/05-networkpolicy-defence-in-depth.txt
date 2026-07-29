@@ -1,0 +1,47 @@
+======================================================================
+ EVIDENCE: NetworkPolicy underneath the mesh, and what each layer adds
+======================================================================
+
+NAME                                                   POD-SELECTOR                                 AGE
+allow-dns-egress                                       <none>                                       156m
+allow-gateway-to-reporting                             app.kubernetes.io/name=reporting             156m
+allow-istiod-egress                                    <none>                                       156m
+allow-kubelet-probes                                   <none>                                       156m
+allow-ledger-api-ingress-from-reporting                app.kubernetes.io/name=ledger-api            156m
+allow-ledger-api-ingress-from-unauthorised-test-only   app.kubernetes.io/name=ledger-api            6m57s
+allow-reporting-egress-to-ledger-api                   app.kubernetes.io/name=reporting             156m
+allow-unauthorised-client-egress-test-only             app.kubernetes.io/name=unauthorised-client   6m57s
+default-deny-all                                       <none>                                       156m
+
+----------------------------------------------------------------------
+WHAT THE NETWORK LAYER CATCHES THAT THE MESH DOES NOT
+----------------------------------------------------------------------
+  Istio authorization is enforced BY THE SIDECAR, inside the pod.
+  Anything that avoids the sidecar avoids the policy:
+    - a pod created without the injection label
+    - a workload that removes or bypasses its own proxy after
+      compromise (the proxy is in its blast radius; the CNI is not)
+    - ports Istio was never told to capture
+  NetworkPolicy is enforced by the CNI, outside the pod, so it still
+  applies in every one of those cases.
+
+----------------------------------------------------------------------
+WHAT THE MESH CATCHES THAT THE NETWORK LAYER CANNOT
+----------------------------------------------------------------------
+  Identity. reporting and unauthorised-client are the same namespace,
+  the same node and the same pod CIDR - see the addresses in
+  03-authorization-identity.txt. No NetworkPolicy can admit one and
+  refuse the other, because at L3/L4 there is nothing to tell them
+  apart. Nor can it express 'GET /transactions but not POST'.
+
+  Pod IPs are also recycled. An address-based allow-list silently
+  transfers authority to whatever workload lands on that IP next.
+
+----------------------------------------------------------------------
+ORDER OF ENFORCEMENT, AND A USEFUL DIAGNOSTIC
+----------------------------------------------------------------------
+  The CNI drops packets before Envoy sees them, so NetworkPolicy is the
+  outer gate. A request refused there produces a timeout with NO entry
+  in the sidecar access log. So: a denial that is invisible in the
+  Istio logs was dropped below the mesh - which tells you immediately
+  which layer to debug.

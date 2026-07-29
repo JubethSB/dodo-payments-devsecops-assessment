@@ -1,0 +1,65 @@
+======================================================================
+ EVIDENCE: how workload certs are issued, rotated and rooted
+======================================================================
+
+$ istioctl proxy-config secret reporting-7fb448476b-q49sg -n payments
+RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
+default           Cert Chain     ACTIVE     true           512291b42696e63ce7763c9a0ae03353     2026-07-30T11:51:44Z     2026-07-29T11:49:44Z
+ROOTCA            CA             ACTIVE     true           0b294e0db311647bc0d092d4cff992a0     2036-07-26T09:10:32Z     2026-07-29T09:10:32Z
+
+----------------------------------------------------------------------
+ISSUANCE
+----------------------------------------------------------------------
+  1. The injector mounts a PROJECTED ServiceAccount token into the
+     sidecar with audience 'istio-ca'. Note this works even though the
+     workloads set automountServiceAccountToken: false - that field
+     only suppresses the default kube-api-access volume, and Istio
+     mounts its own, narrowly-audienced one.
+  2. pilot-agent generates a private key IN THE POD. The key is never
+     transmitted; only a CSR leaves the sidecar.
+  3. istiod validates the token via the TokenReview API, confirming the
+     pod really runs under that ServiceAccount, and signs the CSR.
+  4. The certificate is delivered over SDS and held in memory. It is
+     not written to disk and not stored in a Secret, so there is no
+     at-rest copy for an attacker with etcd or volume access to steal.
+
+  The SAN is the SPIFFE ID the AuthorizationPolicy matches on:
+    spiffe://cluster.local/ns/payments/sa/reporting
+
+----------------------------------------------------------------------
+ROTATION
+----------------------------------------------------------------------
+  Default lifetime is 24h and pilot-agent renews at ~50% of it, so
+  roughly every 12h, without restarting the pod. Short lifetimes are
+  the reason there is no CRL here: revocation is achieved by declining
+  to renew, which bounds the damage from a leaked key to hours rather
+  than relying on every peer honouring a revocation list.
+
+  This is also why the NetworkPolicy in networkpolicy/00-default-deny
+  must permit egress to istiod on 15012. Block it and nothing fails
+  immediately - existing certs keep working - and then the namespace
+  fails closed hours later when renewal is due.
+
+----------------------------------------------------------------------
+TRUST ROOT
+----------------------------------------------------------------------
+  istiod acts as the CA. On a fresh install it self-generates a root
+  and stores it in the istio-ca-secret Secret in istio-system:
+    istio-ca-secret type=istio.io/ca-root keys=
+    key:     "ca-cert.pem"
+    "ca-key.pem"
+    "cert-chain.pem"
+    "root-cert.pem"
+
+  The root public cert is distributed to every namespace in the
+  istio-ca-root-cert ConfigMap, which is how a sidecar validates its
+  peers:
+    payments/istio-ca-root-cert
+
+  HONEST LIMITATION for a PCI deployment: a self-signed root generated
+  by istiod means the CA private key lives in a Kubernetes Secret,
+  readable by anyone with get-secrets in istio-system, and compromising
+  it forges ANY workload identity in the mesh. Production should make
+  istiod an intermediate under an offline or HSM-backed root, so the
+  blast radius of a cluster compromise is one revocable intermediate
+  rather than the whole trust domain.

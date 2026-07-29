@@ -95,15 +95,32 @@ spec:
 
   values:
     cni:
-      # k3s does NOT use the upstream CNI directories. It ships its own
-      # binaries and writes its config under /var/lib/rancher. Pointing the
-      # CNI installer at the standard /opt/cni/bin here produces a DaemonSet
-      # that starts cleanly and silently fails to redirect any traffic, which
-      # then looks like an mTLS problem rather than an install problem.
+      # k3s does NOT use the upstream CNI directories, and the bin directory is
+      # not the obvious one either.
       #
-      # scripts/install-istio.sh verifies these paths against the running node
-      # before installing, and fails loudly if they do not match.
-      cniBinDir: /bin
+      # THIS EXACT VALUE COST A DEBUGGING CYCLE, so it is worth being precise.
+      #
+      # /bin on a k3s node DOES contain CNI plugins (portmap, bridge, loopback),
+      # which makes it look like the right answer and is what most k3d+Istio
+      # recipes online tell you to use. It is wrong here. kubelet on this k3s
+      # build loads plugins from /var/lib/rancher/k3s/data/cni, so istio-cni
+      # installed itself to a directory kubelet never reads:
+      #
+      #   istio-cni-node log:
+      #     Copied istio-cni to /host/opt/cni/bin
+      #
+      #   kubelet, on every pod creation:
+      #     plugin type="istio-cni" name="istio-cni" failed (add):
+      #     failed to find plugin "istio-cni" in path [/var/lib/rancher/k3s/data/cni]
+      #
+      # The failure mode is nasty: the CNI DaemonSet is Running and healthy, the
+      # injected pod is admitted, and then every sandbox creation fails. Pods sit
+      # in Pending/Init forever with no IP, and nothing in the Istio logs says
+      # anything is wrong.
+      #
+      # scripts/install-istio.sh now verifies against the directory KUBELET
+      # actually uses, not merely a directory that happens to contain plugins.
+      cniBinDir: /var/lib/rancher/k3s/data/cni
       cniConfDir: /var/lib/rancher/k3s/agent/etc/cni/net.d
 
     global:

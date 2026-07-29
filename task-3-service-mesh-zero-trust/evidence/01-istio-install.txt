@@ -87,27 +87,75 @@ VERIFIED. Captured from a real install run, not written from the manifest.
   admission.
 
 ----------------------------------------------------------------------
- WHAT IS NOT YET PROVEN
+ THE CNI PATH THAT THE FIRST GUARD STILL GOT WRONG
 ----------------------------------------------------------------------
 
-  Sidecar injection did not complete on this run. The pods entered
-  Init:0/2 and the cluster was lost before the rollout finished, so this
-  file does NOT claim that ledger-api and reporting are meshed.
+  The guard above passed while the value was still wrong, so it is worth
+  recording precisely how.
 
-  The cause was environmental, not a mesh problem: CoreDNS had died
-  (0/1 Unknown, 11 restarts, no pod IP) after repeated hard cluster
-  kills, so every name in the cluster failed to resolve -
+  The original cniBinDir was /bin. That directory DOES contain CNI
+  plugins on a k3s node - portmap, bridge, loopback, host-local - so a
+  check of the form "does this directory contain CNI plugins?" passes on
+  it. It is also what most k3d+Istio recipes online recommend.
 
-    ledger-api                            -> FAIL Temporary failure in name resolution
-    ledger-api.payments.svc.cluster.local -> FAIL Temporary failure in name resolution
-    kubernetes.default                    -> FAIL Temporary failure in name resolution
+  kubelet on this k3s build does not read /bin. It reads
+  /var/lib/rancher/k3s/data/cni. So istio-cni installed itself somewhere
+  kubelet never looks:
 
-  The underlying fault is documented in 00-environment-triage.txt: the
-  Docker Desktop backend is not running (com.docker.service is Stopped
-  and starting it needs UAC), so nothing manages container lifecycle
-  across a WSL VM suspend, and the cluster is killed repeatedly.
+    istio-cni-node log:
+      Copied istio-cni to /host/opt/cni/bin
 
-  Everything above IS verified. Everything below M1 - mTLS STRICT, the
-  AuthorizationPolicy demonstration, the NetworkPolicy layer - has
-  manifests written and validated but is NOT yet runtime-tested, and is
-  labelled as such rather than presented as evidence.
+    kubelet, on EVERY pod creation:
+      Failed to create pod sandbox: plugin type="istio-cni" name="istio-cni"
+      failed (add): failed to find plugin "istio-cni" in path
+      [/var/lib/rancher/k3s/data/cni]
+
+  The failure presentation is the nasty part. istio-cni-node reports
+  Running and Ready. istiod logs "Process sidecar injection request"
+  perfectly normally. The pod is admitted. And then every sandbox
+  creation fails, so pods sit with no IP forever and nothing in any
+  Istio log says anything is wrong.
+
+  Fixed by resolving the path from kubelet's own --cni-bin-dir flag
+  rather than probing for a directory that merely contains plugins.
+  After the fix:
+
+    $ ls -la /var/lib/rancher/k3s/data/cni/istio-cni
+    -rwxr-xr-x 1 root root 55468194 Jul 29 11:16 .../istio-cni
+
+  LESSON, which is the reason this is written down: a guard that checks
+  a plausible property ("this looks like a CNI directory") is not the
+  same as a guard that checks the authoritative one ("this is the
+  directory kubelet loads from"). The first version of the check gave
+  false confidence, which is worse than no check.
+
+----------------------------------------------------------------------
+ WHERE THE SIDECAR ACTUALLY LANDS
+----------------------------------------------------------------------
+
+  Istio 1.30 injects the proxy as a Kubernetes NATIVE SIDECAR: an entry
+  in .spec.initContainers with restartPolicy: Always, NOT in
+  .spec.containers. meshConfig's holdApplicationUntilProxyStarts: true
+  selects this behaviour.
+
+    NAME                          INIT                           MAIN
+    ledger-api-5bd7cfb845-8tk2f   istio-validation,istio-proxy   ledger-api
+    reporting-7fb448476b-q49sg    istio-validation,istio-proxy   reporting
+    unauthorised-client-...       istio-validation,istio-proxy   client
+
+  This cost a second debugging cycle: a check counting only
+  .spec.containers reported zero sidecars on a completely healthy mesh.
+
+  Beyond trivia, it closes a real startup race. With a classic sidecar
+  an application that makes an outbound call at startup can beat Envoy
+  to readiness and fail intermittently. As a native sidecar the proxy is
+  guaranteed ready first, so there is no window in which a meshed
+  workload emits unproxied traffic.
+
+----------------------------------------------------------------------
+ VERIFICATION
+----------------------------------------------------------------------
+
+  All five workloads are meshed and Ready, PSS restricted is still
+  enforced on the namespace, and no pod in `payments` holds NET_ADMIN or
+  NET_RAW. ./scripts/verify-mesh.sh exits 0.
