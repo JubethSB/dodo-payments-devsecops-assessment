@@ -1,5 +1,12 @@
 # Dodo Payments: Security & DevOps Engineer Technical Assessment
 
+[![CI](https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/workflows/ci-cd.yml)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-k3d-326CE5?logo=kubernetes&logoColor=white)
+![Istio](https://img.shields.io/badge/Istio-mTLS%20STRICT-466BB0?logo=istio&logoColor=white)
+![Supply chain](https://img.shields.io/badge/Supply%20chain-cosign%20keyless%20%2B%20SBOM-F97316?logo=sigstore&logoColor=white)
+![Policy](https://img.shields.io/badge/Admission-PSS%20restricted%20%2B%20Kyverno-6E56CF)
+![Scope](https://img.shields.io/badge/Scope-PCI%20DSS%20CDE-2EA043)
+
 `ledger-api` from the starter repo, taken from the state it shipped in to
 something that would survive a PCI audit. Workload hardening, a delivery
 pipeline that actually gates, then zero-trust networking and offensive testing.
