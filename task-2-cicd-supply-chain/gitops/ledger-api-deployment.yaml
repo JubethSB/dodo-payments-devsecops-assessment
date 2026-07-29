@@ -59,7 +59,7 @@ spec:
           # Placeholder until the first pipeline run rewrites it; the local
           # bootstrap script substitutes the locally-built image so the GitOps
           # demo works before GHCR is wired up.
-          image: ghcr.io/jubethsb/ledger-api@sha256:a778f39540e63cdd0c633df1b8a04d79e020b63503d6d3b0340866eca62e78a1
+          image: ghcr.io/jubethsb/ledger-api@sha256:c7f2c35e35f3eec491dc06614b5af419d7aad6cfde2ae680009ca2e179a25379
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
