@@ -15,7 +15,7 @@ Runs locally on k3d. No cloud account.
 
 | Task | State | |
 |---|---|---|
-| [1: Workload Hardening](./task-1-workload-hardening/README.md) | Done | 17/17 checks; starter Deployment rejected at admission |
+| [1: Workload Hardening](./task-1-workload-hardening/README.md) | Done | 17/17 checks; starter Deployment rejected at admission|
 | [2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | Done | 7/7 jobs; image signed keyless, drift self-heal verified |
 | [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Done | Istio mTLS STRICT; SPIFFE authz (200 vs 403); NetworkPolicy; gateway + canary |
 | [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Done | Passive OSINT of dodopayments.tech; 4 exploited findings on the local target, CVSS-scored |
