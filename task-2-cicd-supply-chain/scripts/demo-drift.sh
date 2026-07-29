@@ -62,6 +62,7 @@ done
 export PATH
 
 
+
 NS=argocd
 APP_NS=payments
 APP=ledger-api
@@ -82,6 +83,12 @@ status() {
     -o jsonpath='sync={.status.sync.status} health={.status.health.status}' 2>/dev/null
   echo
 }
+live_image() {
+  kubectl get deploy "$APP" -n "$APP_NS" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null
+}
+
+RESULT="INCONCLUSIVE"
 
 {
 echo "================================================================"
@@ -89,47 +96,60 @@ echo " EVIDENCE: ArgoCD drift detection and self-heal"
 echo " Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "================================================================"
 echo
-echo "The Application is configured with syncPolicy.automated.selfHeal=true."
-echo "Git is the source of truth; anything else is drift."
+echo "The Application sets syncPolicy.automated.selfHeal=true, so git is the"
+echo "source of truth and anything else is drift."
+echo
+echo "NOTE ON WHAT IS DRIFTED, AND WHY IT IS NOT REPLICAS."
+echo "An earlier version of this demo scaled the Deployment and reported"
+echo "success while nothing was reverted. The Application deliberately sets:"
+echo
+echo "    ignoreDifferences:"
+echo "      - group: apps"
+echo "        kind: Deployment"
+echo "        jsonPointers: [/spec/replicas]"
+echo
+echo "so that an autoscaler and ArgoCD do not fight over the replica count."
+echo "Replicas are therefore the one field ArgoCD is told to ignore, and"
+echo "drifting it proves nothing. This demo changes the container image"
+echo "instead: the classic 'someone hotfixed production by hand' change, and"
+echo "one ArgoCD very much does watch."
 echo
 
-echo "--- 1. Steady state: live cluster matches git ---"
-echo "\$ kubectl get application $APP -n $NS"
+echo "--- 1. Steady state ---"
 kubectl get application "$APP" -n "$NS" 2>&1
-echo
-echo "\$ kubectl get deploy $APP -n $APP_NS -o jsonpath='{.spec.replicas}'"
-BEFORE="$(kubectl get deploy "$APP" -n "$APP_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
-echo "replicas = $BEFORE"
+BEFORE_IMG="$(live_image)"
+echo "image in cluster = $BEFORE_IMG"
 echo
 
-echo "--- 2. Introduce drift: a manual, out-of-band kubectl edit ---"
-echo "This is the change an engineer makes at 3am and forgets to commit."
-echo "\$ kubectl scale deploy/$APP -n $APP_NS --replicas=5"
-kubectl scale deploy/"$APP" -n "$APP_NS" --replicas=5 2>&1
-sleep 2
-echo "replicas now = $(kubectl get deploy "$APP" -n "$APP_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+echo "--- 2. Introduce drift: hand-edit the image, out of band ---"
+echo "\$ kubectl set image deploy/$APP ${APP}=nginx:1.27-alpine -n $APP_NS"
+kubectl set image deploy/"$APP" "${APP}=nginx:1.27-alpine" -n "$APP_NS" 2>&1
+sleep 3
+echo "image now = $(live_image)"
 echo
 
 echo "--- 3. ArgoCD detects the divergence ---"
-# Force an immediate comparison instead of waiting for the poll interval
-# (default 3m), so the transcript stays readable.
+# Force an immediate comparison rather than waiting out the 3m poll interval.
 kubectl -n "$NS" annotate application "$APP" \
   argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1
+DETECTED=0
 for i in $(seq 1 30); do
   s="$(status)"
   echo "  t+${i}s  $s"
-  case "$s" in *OutOfSync*) echo "  -> DRIFT DETECTED"; break;; esac
-  sleep 1
+  case "$s" in *OutOfSync*) echo "  -> DRIFT DETECTED"; DETECTED=1; break;; esac
+  sleep 2
 done
+[ "$DETECTED" -eq 1 ] || echo "  -> no OutOfSync seen (it may have self-healed before the first poll)"
 echo
 
-echo "--- 4. Self-heal reverts it without human action ---"
-for i in $(seq 1 60); do
-  r="$(kubectl get deploy "$APP" -n "$APP_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
-  s="$(status)"
-  echo "  t+${i}s  replicas=$r  $s"
-  if [ "$r" = "$BEFORE" ]; then
-    echo "  -> SELF-HEALED: replicas back to $BEFORE, as declared in git"
+echo "--- 4. Self-heal reverts it, with no human action ---"
+HEALED=0
+for i in $(seq 1 45); do
+  cur="$(live_image)"
+  echo "  t+$((i*2))s  image=$cur  $(status)"
+  if [ "$cur" = "$BEFORE_IMG" ]; then
+    echo "  -> SELF-HEALED: image is back to the digest declared in git"
+    HEALED=1
     break
   fi
   sleep 2
@@ -138,11 +158,26 @@ echo
 
 echo "--- 5. Final state ---"
 kubectl get application "$APP" -n "$NS" 2>&1
-kubectl get deploy "$APP" -n "$APP_NS" 2>&1
+echo "image in cluster = $(live_image)"
+echo "image declared in git ="
+grep -m1 -E '^[[:space:]]+image: ghcr' "$HERE/gitops/ledger-api-deployment.yaml" 2>/dev/null | sed 's/^ */  /'
 echo
-echo "RESULT: the manual change was detected and reverted automatically."
-echo "Git remained the source of truth; the drift was transient and logged"
-echo "rather than permanent and invisible."
+
+# Report what actually happened. The previous version printed a success line
+# unconditionally, which is worse than no evidence at all: it asserted a
+# control was working while the transcript above showed it had not fired.
+if [ "$HEALED" -eq 1 ]; then
+  RESULT="PASS"
+  echo "RESULT: PASS. The hand-made change was detected and reverted"
+  echo "automatically. Drift was transient and logged rather than permanent"
+  echo "and invisible, and git stayed the source of truth."
+else
+  RESULT="FAIL"
+  echo "RESULT: FAIL. The image was still $(live_image) after 90s, so"
+  echo "self-heal did not revert it. Check that syncPolicy.automated.selfHeal"
+  echo "is true and that this field is not covered by ignoreDifferences."
+fi
 } 2>&1 | tee "$OUT"
 
 log "Saved to $OUT"
+[ "$RESULT" = "PASS" ] || exit 1

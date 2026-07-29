@@ -1,0 +1,52 @@
+================================================================
+ EVIDENCE: ArgoCD drift detection and self-heal
+ Generated: 2026-07-29T04:17:54Z
+================================================================
+
+The Application sets syncPolicy.automated.selfHeal=true, so git is the
+source of truth and anything else is drift.
+
+NOTE ON WHAT IS DRIFTED, AND WHY IT IS NOT REPLICAS.
+An earlier version of this demo scaled the Deployment and reported
+success while nothing was reverted. The Application deliberately sets:
+
+    ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers: [/spec/replicas]
+
+so that an autoscaler and ArgoCD do not fight over the replica count.
+Replicas are therefore the one field ArgoCD is told to ignore, and
+drifting it proves nothing. This demo changes the container image
+instead: the classic 'someone hotfixed production by hand' change, and
+one ArgoCD very much does watch.
+
+--- 1. Steady state ---
+NAME         SYNC STATUS   HEALTH STATUS
+ledger-api   Synced        Healthy
+image in cluster = ghcr.io/jubethsb/ledger-api@sha256:a778f39540e63cdd0c633df1b8a04d79e020b63503d6d3b0340866eca62e78a1
+
+--- 2. Introduce drift: hand-edit the image, out of band ---
+$ kubectl set image deploy/ledger-api ledger-api=nginx:1.27-alpine -n payments
+deployment.apps/ledger-api image updated
+image now = nginx:1.27-alpine
+
+--- 3. ArgoCD detects the divergence ---
+  t+1s  sync=OutOfSync health=Progressing
+  -> DRIFT DETECTED
+
+--- 4. Self-heal reverts it, with no human action ---
+  t+2s  image=nginx:1.27-alpine  sync=Synced health=Progressing
+  t+4s  image=ghcr.io/jubethsb/ledger-api@sha256:a778f39540e63cdd0c633df1b8a04d79e020b63503d6d3b0340866eca62e78a1  sync=Synced health=Healthy
+  -> SELF-HEALED: image is back to the digest declared in git
+
+--- 5. Final state ---
+NAME         SYNC STATUS   HEALTH STATUS
+ledger-api   Synced        Healthy
+image in cluster = ghcr.io/jubethsb/ledger-api@sha256:a778f39540e63cdd0c633df1b8a04d79e020b63503d6d3b0340866eca62e78a1
+image declared in git =
+  # `image: ghcr.io/<owner>/ledger-api@sha256:<digest>`, the sed expression in
+
+RESULT: PASS. The hand-made change was detected and reverted
+automatically. Drift was transient and logged rather than permanent
+and invisible, and git stayed the source of truth.
