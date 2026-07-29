@@ -70,3 +70,44 @@ CVE-2024-34069
 # requests 2.19.1 (Authorization header leaked across a redirect to a
 # different host)
 CVE-2018-18074
+
+# ---------------------------------------------------------------------------
+# ACCEPTED RISK: Python packages contributed by the base image
+#
+# Owner     : Jubeth S B
+# Accepted  : 2026-07-28
+# Review by : 2026-10-28, or when the base image moves
+#
+# These are not in requirements.txt. python:3.6-slim ships setuptools, wheel
+# and pip preinstalled, and urllib3 arrives as a transitive dependency of the
+# pinned requests 2.19.1.
+#
+# They surfaced because the image gate blocks on `library` findings, which was
+# meant to separate "dependencies this repo controls" from "the EOL base image".
+# That split turned out to be imperfect: the base contributes both Debian
+# packages (vuln-type os) AND Python packages (vuln-type library), so filtering
+# by type does not cleanly express the distinction I actually wanted.
+#
+# Fixing them means either rebuilding the base image or upgrading requests,
+# and requests cannot move without moving Flask and the interpreter, which is
+# the same application rewrite blocked until the Task 4 pen test concludes.
+#
+# Listed by id rather than widening the filter, for the same reason as above: a
+# new vulnerability in these packages should still break the build.
+# ---------------------------------------------------------------------------
+
+# setuptools (base image): path traversal, RCE via package_index download
+CVE-2022-40897
+CVE-2024-6345
+CVE-2025-47273
+
+# wheel (base image): DoS via crafted input
+CVE-2022-40898
+
+# urllib3 (transitive via requests 2.19.1): certificate handling, cookie leak
+# on cross-origin redirect, decompression-bomb bypass, header disclosure
+CVE-2019-11324
+CVE-2023-43804
+CVE-2025-66471
+CVE-2026-21441
+CVE-2026-44431
