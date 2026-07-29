@@ -9,7 +9,7 @@ and offensive reconnaissance plus penetration testing.
 | Task | Status | Headline |
 |---|---|---|
 | [Task 1: Workload Hardening](./task-1-workload-hardening/README.md) | **Complete** | 17/17 verification checks pass; original insecure Deployment rejected at admission |
-| [Task 2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | **Pipeline green** | All 7 jobs pass; image signed with cosign keyless, digest committed back. ArgoCD demo outstanding |
+| [Task 2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | **Complete** | All 7 jobs pass; image signed with cosign keyless, digest committed back, ArgoCD drift detection and self-heal verified |
 | [Task 3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Not started | |
 | [Task 4: Recon & Penetration Testing](./task-4-recon-pentest/README.md) | Not started | |
 

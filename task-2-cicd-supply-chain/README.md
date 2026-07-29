@@ -23,8 +23,15 @@ Proof, all verifiable by anyone:
 | Security tab | 100 alerts (6 critical, 11 high) |
 | GitOps commit | `6641d1f gitops: pin ledger-api to sha256:63ff99c4…` |
 
-Still outstanding: the ArgoCD drift/self-heal demo, which needs a local cluster
-(see the last section).
+GitOps is proven too: ArgoCD syncs from this repo, and a hand-made change to
+the running Deployment is detected and reverted automatically. Evidence in
+`evidence/05-argocd-drift-selfheal.txt`.
+
+| | |
+|---|---|
+| Drift introduced | `kubectl set image … ledger-api=nginx:1.27-alpine` |
+| Detected | `OutOfSync` after 1s |
+| Reverted | back to the GHCR digest after 4s, no human action |
 
 ## Pipeline shape
 
