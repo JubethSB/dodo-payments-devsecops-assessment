@@ -155,21 +155,55 @@ kubectl -n "$NS" rollout status deploy/ledger-api --timeout=300s
 # produces evidence that looks like a policy result and is not one.
 log "Baseline connectivity check (pre-mesh)"
 
-kubectl -n "$NS" exec deploy/reporting -c reporting -- python -c "
+# `rollout status` returning means the pods are Ready, NOT that the Service has
+# published their addresses. EndpointSlice propagation lags pod readiness by a
+# short interval, so a check fired immediately after a rollout races it and
+# fails on a cluster that is perfectly healthy a second later.
+#
+# Wait for a ready endpoint first, then retry the call itself. The check stays
+# fatal - the point is to distinguish "not ready yet" from "actually broken",
+# not to soften the assertion.
+printf '    waiting for ledger-api endpoints'
+for i in $(seq 1 30); do
+  READY_EP="$(kubectl -n "$NS" get endpointslice -l "kubernetes.io/service-name=ledger-api" \
+                -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null \
+              | grep -c true || true)"
+  [ "${READY_EP:-0}" -ge 1 ] && break
+  printf '.'
+  sleep 2
+done
+echo " ${READY_EP:-0} ready"
+[ "${READY_EP:-0}" -ge 1 ] || die "ledger-api has no ready endpoints; the Service will resolve to nothing"
+
+probe() {
+  kubectl -n "$NS" exec deploy/reporting -c reporting -- python -c "
 import sys, urllib.request
-r = urllib.request.urlopen('http://ledger-api:8080/health', timeout=8)
-sys.exit(0 if r.status == 200 else 1)
-" >/dev/null 2>&1 \
+r = urllib.request.urlopen('$1', timeout=8)
+print(r.status)
+" 2>/dev/null
+}
+
+HEALTH_STATUS=""
+for i in $(seq 1 15); do
+  HEALTH_STATUS="$(probe 'http://ledger-api:8080/health' || true)"
+  [ "$HEALTH_STATUS" = "200" ] && break
+  sleep 2
+done
+
+[ "$HEALTH_STATUS" = "200" ] \
   && echo "    reporting -> ledger-api:8080/health   OK (plaintext, pre-mesh)" \
-  || die "reporting cannot reach ledger-api. Fix this before installing Istio,
+  || die "reporting cannot reach ledger-api after 30s of retries (last result:
+       '${HEALTH_STATUS:-no response}'). Fix this before installing Istio,
        otherwise every later 'connection refused' is ambiguous between a
        policy decision and a broken service."
 
-SUMMARY_STATUS="$(kubectl -n "$NS" exec deploy/reporting -c reporting -- python -c "
-import urllib.request
-r = urllib.request.urlopen('http://127.0.0.1:8081/summary', timeout=10)
-print(r.status)
-" 2>/dev/null || echo "FAILED")"
+SUMMARY_STATUS=""
+for i in $(seq 1 10); do
+  SUMMARY_STATUS="$(probe 'http://127.0.0.1:8081/summary' || true)"
+  [ "$SUMMARY_STATUS" = "200" ] && break
+  sleep 2
+done
+[ -n "$SUMMARY_STATUS" ] || SUMMARY_STATUS="no response"
 
 if [ "$SUMMARY_STATUS" = "200" ]; then
   echo "    reporting /summary (calls ledger-api)  HTTP 200"

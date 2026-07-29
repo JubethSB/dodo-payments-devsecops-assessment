@@ -1,0 +1,107 @@
+# The unauthorised caller: the negative control for the authorization demo.
+#
+# Task 1 replaced the starter's `reporting` pod - a bare curlimages/curl running
+# `sleep infinity`, with no Service and no purpose but to be a pivot point -
+# with a real service. This brings that shape back deliberately, as the thing
+# an AuthorizationPolicy is supposed to stop.
+#
+# WHAT MAKES IT A VALID CONTROL
+# ---------------------------------------------------------------------------
+# It is inside the mesh and holds a VALID workload certificate. That is the
+# whole point. A pod outside the mesh proves only that STRICT mTLS rejects
+# plaintext, which 10-peer-authentication.yaml already demonstrates. This pod
+# completes the handshake successfully and is then refused on identity:
+#
+#   spiffe://cluster.local/ns/payments/sa/unauthorised-client
+#
+# is not `.../sa/reporting`, so no ALLOW rule matches and default-deny-all
+# applies. The expected result is HTTP 403 with an RBAC access-denied entry in
+# ledger-api's sidecar log - not a connection error.
+#
+# That distinction is the evidence. "Authenticated but not authorised" is the
+# case a network-level control cannot express at all: at the packet level this
+# pod is indistinguishable from `reporting`, same namespace, same node, same
+# address range.
+#
+# It runs to the same hardening standard as every other workload here, because
+# the namespace enforces PSS `restricted` and Task 1's Kyverno policies apply
+# to it identically. A demo pod that needed the rules relaxed would be evidence
+# that the rules do not hold.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: unauthorised-client
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: unauthorised-client
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/component: test-fixture
+# Its own ServiceAccount, not `default`. The identity IS the subject of the
+# test, so it has to be distinct and it has to be intentional.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: unauthorised-client
+  namespace: payments
+  labels:
+    app.kubernetes.io/name: unauthorised-client
+    app.kubernetes.io/part-of: payments-platform
+    app.kubernetes.io/component: test-fixture
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: unauthorised-client
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: unauthorised-client
+        app.kubernetes.io/part-of: payments-platform
+        app.kubernetes.io/component: test-fixture
+    spec:
+      serviceAccountName: unauthorised-client
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10003
+        runAsGroup: 10003
+        fsGroup: 10003
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: client
+          # Pinned by tag, not :latest - Task 1's disallow-latest-tag policy
+          # rejects floating tags and applies to this pod too.
+          image: curlimages/curl:8.11.1
+          imagePullPolicy: IfNotPresent
+          command: ["sleep", "infinity"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10003
+            runAsGroup: 10003
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            # requests.cpu, requests.memory and limits.memory are all mandatory
+            # under Task 1's require-resource-limits policy.
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 32Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Mi

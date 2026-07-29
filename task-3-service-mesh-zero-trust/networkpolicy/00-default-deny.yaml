@@ -1,0 +1,127 @@
+# Kubernetes NetworkPolicy: the layer underneath the mesh.
+#
+# WHY BOTH, WHEN THE MESH ALREADY DENIES BY DEFAULT
+# ---------------------------------------------------------------------------
+# The two controls fail in different directions, and neither covers the other's
+# gap.
+#
+# What NetworkPolicy catches that AuthorizationPolicy does not:
+#
+#   - Traffic that never reaches a sidecar at all. Istio authorization is
+#     enforced BY the sidecar. A pod in the namespace with injection disabled
+#     (a missing label, a `sidecar.istio.io/inject: "false"` annotation, a
+#     workload created before the namespace was labelled) has no enforcement
+#     point, and every Istio policy in this directory is silent about it.
+#     NetworkPolicy is enforced by the CNI, so it applies to that pod anyway.
+#   - A compromised workload that removes or bypasses its own proxy. Envoy runs
+#     in the pod. Anything with enough control of that pod to bypass the
+#     iptables redirect has bypassed authorization with it. The CNI is outside
+#     the pod's blast radius.
+#   - The control plane being down or wedged. Sidecars keep their last-known
+#     config, so this is not immediate, but policy changes stop propagating and
+#     new pods come up unconfigured. NetworkPolicy has no such dependency.
+#   - Non-HTTP traffic and ports Istio was never told to capture.
+#
+# What AuthorizationPolicy catches that NetworkPolicy cannot:
+#
+#   - Identity. This is the big one. `unauthorised-client` and `reporting` sit
+#     in the same namespace, on the same node, in the same pod CIDR. At the
+#     packet level they are indistinguishable, so no NetworkPolicy can permit
+#     one and refuse the other. Only the certificate tells them apart.
+#   - HTTP semantics. "GET /transactions but not POST /transactions" is not
+#     expressible in a NetworkPolicy, which sees a TCP connection to port 8080.
+#   - Stability across rescheduling. NetworkPolicy selectors are label-based
+#     and hold up, but any rule that degrades to an IP does not.
+#
+# Put plainly: NetworkPolicy decides which pods can exchange packets.
+# AuthorizationPolicy decides which workload identities may perform which
+# operations. A control that only did the first would let a compromised
+# neighbour impersonate a caller; a control that only did the second would be
+# bypassed by anything that escapes its sidecar.
+#
+# ORDER OF ENFORCEMENT: the CNI drops packets before Envoy ever sees them, so
+# NetworkPolicy is the outer gate. A request refused here produces a connection
+# timeout with NO Istio access-log entry, which is a useful diagnostic tell -
+# if a denial is invisible in the sidecar log, it was dropped below the mesh.
+---
+# 1. Deny everything, both directions, for every pod in the namespace.
+#
+# Egress is included deliberately. An ingress-only default-deny is the common
+# half-measure: it stops the namespace being reached, and does nothing about a
+# compromised pod dialling out. For a namespace holding cardholder data the
+# exfiltration path is the one that matters most.
+#
+# This is the NetworkPolicy counterpart to Istio's REGISTRY_ONLY outbound
+# policy in 00-istio-install.yaml. Same intent, different layer: Istio blocks
+# it at L7 for meshed pods, this blocks it at L3/L4 for everything.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: payments
+spec:
+  podSelector: {}          # every pod in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. DNS egress.
+#
+# Must come first among the allows, because everything else depends on it and
+# the failure is deceptive: without DNS, a service-to-service call fails at
+# name resolution and surfaces as a timeout that looks exactly like a policy
+# drop on the wrong rule. Debugging that from the wrong end costs real time.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: payments
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3. Egress to the Istio control plane.
+#
+# Sidecars need istiod to fetch configuration (XDS) and, critically, to obtain
+# and renew their workload certificates (SDS) on port 15012. Without this rule
+# the default-deny above silently breaks certificate rotation: existing proxies
+# keep working until their current cert expires, then the namespace fails
+# closed hours later with no obvious cause.
+#
+# A good example of the two layers interfering if written carelessly. The mesh
+# does not work unless the network permits the mesh's own control traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-istiod-egress
+  namespace: payments
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - protocol: TCP
+          port: 15012      # XDS + SDS (certificates)
+        - protocol: TCP
+          port: 15010      # plaintext XDS, not used under STRICT but harmless
+        - protocol: TCP
+          port: 443        # injection / validation webhooks

@@ -1,0 +1,113 @@
+======================================================================
+ EVIDENCE: Istio 1.30.3 installed, with istio-cni, under PSS restricted
+======================================================================
+
+VERIFIED. Captured from a real install run, not written from the manifest.
+
+----------------------------------------------------------------------
+ THE CNI PATH GUARD EARNED ITS PLACE
+----------------------------------------------------------------------
+
+  install-istio.sh refuses to install unless the CNI directories declared
+  in istio/00-istio-install.yaml match the running node. On this k3s
+  node the real paths are NOT the upstream defaults:
+
+    ==> Verifying k3s CNI paths before installing
+        declared cniConfDir: /var/lib/rancher/k3s/agent/etc/cni/net.d
+        declared cniBinDir:  /bin
+        cniBinDir contains CNI plugins  OK
+          10-flannel.conflist
+
+  k3s ships its own CNI binaries in /bin and writes its config under
+  /var/lib/rancher, not /opt/cni/bin and /etc/cni/net.d. Pointing the CNI
+  installer at the upstream defaults produces a DaemonSet that starts
+  cleanly, reports Ready, and silently redirects no traffic at all. The
+  symptom is that mTLS "does not work", which sends you to debug
+  PeerAuthentication instead of the install.
+
+  The guard checks for actual plugin binaries (portmap/bridge/loopback),
+  not just that the directory exists, because an empty-but-present
+  directory would pass a existence check and still be wrong.
+
+----------------------------------------------------------------------
+ INSTALL
+----------------------------------------------------------------------
+
+    ==> Resolving istioctl
+        version: 1.30.3
+        installed to /home/jubeth/.local/bin/istioctl
+    client version: 1.30.3
+
+    ==> Validating the IstioOperator manifest
+        .../istio/00-istio-install.yaml is valid
+
+    ==> Installing Istio
+    - Processing resources for Istio core.
+    ✔ Istio core installed
+    - Processing resources for CNI, Istiod.
+    ✔ CNI installed
+    ✔ Istiod installed
+    ✔ Installation complete
+
+    ==> Waiting for the control plane
+    deployment "istiod" successfully rolled out
+    daemon set "istio-cni-node" successfully rolled out
+
+    ==> Control plane state
+    NAME                      READY   STATUS    RESTARTS   AGE
+    istio-cni-node-vdtnx      1/1     Running   0          54s
+    istiod-799ff4d77b-h2mrg   1/1     Running   0          52s
+
+  Both components healthy. istio-cni-node is the DaemonSet that makes
+  the rest of this task possible: it programs each pod's iptables from
+  outside the pod, so no workload needs NET_ADMIN or NET_RAW and the
+  payments namespace keeps its PSS `restricted` enforcement from Task 1.
+
+    ==> Labelling payments for sidecar injection
+    namespace/payments labeled
+
+----------------------------------------------------------------------
+ RESOURCE OVERRIDES, AND WHY THEY WERE NECESSARY
+----------------------------------------------------------------------
+
+  istiod's DEFAULT memory request is 2048Mi. This node has 3.47 GiB
+  allocatable in total. Accepting the default would have reserved well
+  over half the node for a control plane serving four proxies, and would
+  likely have left later components unschedulable.
+
+  Overridden to 256Mi requested / 512Mi limit. A request is a scheduling
+  reservation, not a measurement - measured istiod RSS at this scale is
+  roughly 120-150 MB, so the override is generous rather than tight.
+
+  Proxy resources are set explicitly (10m CPU / 48Mi requested, 128Mi
+  limit) because Task 1's Kyverno policy require-resource-limits applies
+  its list pattern to EVERY container in the namespace. The injected
+  sidecar is held to exactly the same rule as the application container,
+  so a sidecar without requests and a memory limit would be rejected at
+  admission.
+
+----------------------------------------------------------------------
+ WHAT IS NOT YET PROVEN
+----------------------------------------------------------------------
+
+  Sidecar injection did not complete on this run. The pods entered
+  Init:0/2 and the cluster was lost before the rollout finished, so this
+  file does NOT claim that ledger-api and reporting are meshed.
+
+  The cause was environmental, not a mesh problem: CoreDNS had died
+  (0/1 Unknown, 11 restarts, no pod IP) after repeated hard cluster
+  kills, so every name in the cluster failed to resolve -
+
+    ledger-api                            -> FAIL Temporary failure in name resolution
+    ledger-api.payments.svc.cluster.local -> FAIL Temporary failure in name resolution
+    kubernetes.default                    -> FAIL Temporary failure in name resolution
+
+  The underlying fault is documented in 00-environment-triage.txt: the
+  Docker Desktop backend is not running (com.docker.service is Stopped
+  and starting it needs UAC), so nothing manages container lifecycle
+  across a WSL VM suspend, and the cluster is killed repeatedly.
+
+  Everything above IS verified. Everything below M1 - mTLS STRICT, the
+  AuthorizationPolicy demonstration, the NetworkPolicy layer - has
+  manifests written and validated but is NOT yet runtime-tested, and is
+  labelled as such rather than presented as evidence.
