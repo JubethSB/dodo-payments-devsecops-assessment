@@ -13,30 +13,49 @@
 #
 set -uo pipefail
 
-# Locate tools rather than requiring them on PATH. On Windows, winget installs
-# into AppData/Local/Microsoft/WinGet (both Links and versioned Packages
-# directories) and Docker Desktop keeps docker/kubectl in its own resources
-# folder; Git Bash inherits neither.
+# Locate tools rather than requiring them on PATH.
 #
-# Only POSIX-style paths may go into PATH. A Windows path like the value of
-# $LOCALAPPDATA cannot: PATH is colon-separated, so the drive letter becomes its
-# own entry and the remainder loses it. The failure is quiet and misleading,
-# `command -v k3d` then reports a path with no drive letter, which will not
-# execute. $HOME is already POSIX under Git Bash, and cygpath converts anything
-# else when it is available.
+# This has to work in two quite different shells:
+#
+#   Git Bash  - $HOME is /c/Users/<you>, Windows drives are mounted at /c.
+#               winget binaries live under AppData/Local/Microsoft/WinGet and
+#               Docker Desktop keeps docker/kubectl in its own resources dir;
+#               neither is inherited.
+#   WSL       - $HOME is /home/<you>, Windows drives are at /mnt/c, and tools
+#               are usually installed natively (apt, or a downloaded binary in
+#               ~/.local/bin). Docker Desktop's WSL integration provides docker
+#               and kubectl on PATH already.
+#
+# Running `bash script.sh` from PowerShell gets WSL bash, not Git Bash, which
+# is why a script that only knew about Git Bash reported tools missing that
+# were plainly installed.
+#
+# Only POSIX paths may be added. A Windows value such as $LOCALAPPDATA cannot:
+# PATH is colon-separated, so "C:\Users\me" splits into "C" and "\Users\me" and
+# lookups silently resolve to something unexecutable.
 _add_path() {
   case "$1" in [A-Za-z]:*) return 0 ;; esac   # refuse Windows-style paths
   [ -d "$1" ] || return 0
   case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1";; esac
 }
-_WINGET="$HOME/AppData/Local/Microsoft/WinGet"
-if [ ! -d "$_WINGET" ] && command -v cygpath >/dev/null 2>&1 && [ -n "${LOCALAPPDATA:-}" ]; then
-  _WINGET="$(cygpath -u "$LOCALAPPDATA")/Microsoft/WinGet"
-fi
-_add_path "/c/Program Files/Docker/Docker/resources/bin"
-_add_path "/c/Program Files/GitHub CLI"
-_add_path "$_WINGET/Links"
-for _g in "$_WINGET/Packages"/*; do _add_path "$_g"; done
+
+_add_path "$HOME/.local/bin"          # WSL: locally installed binaries
+_add_path "/usr/local/bin"
+
+# Windows-side locations, reachable from either shell.
+for _root in "$HOME/AppData/Local/Microsoft/WinGet" \
+             "/mnt/c/Users/${USER:-$(id -un 2>/dev/null)}/AppData/Local/Microsoft/WinGet" \
+             "/c/Users/${USER:-$(id -un 2>/dev/null)}/AppData/Local/Microsoft/WinGet"; do
+  [ -d "$_root" ] || continue
+  _add_path "$_root/Links"
+  for _g in "$_root/Packages"/*; do _add_path "$_g"; done
+done
+for _d in "/c/Program Files/Docker/Docker/resources/bin" \
+          "/mnt/c/Program Files/Docker/Docker/resources/bin" \
+          "/c/Program Files/GitHub CLI" \
+          "/mnt/c/Program Files/GitHub CLI"; do
+  _add_path "$_d"
+done
 export PATH
 
 
