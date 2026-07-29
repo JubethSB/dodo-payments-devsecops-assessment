@@ -1,101 +1,116 @@
 # Dodo Payments: Security & DevOps Engineer Technical Assessment
 
-Hardening `ledger-api`, a PCI-DSS-scoped payments microservice, end to end:
-workload security, secure CI/CD and supply chain, Istio zero-trust networking,
-and offensive reconnaissance plus penetration testing.
+`ledger-api` from the starter repo, taken from the state it shipped in to
+something that would survive a PCI audit. Workload hardening, a delivery
+pipeline that actually gates, then zero-trust networking and offensive testing.
 
-## Status
+Runs locally on k3d. No cloud account.
 
-| Task | Status | Headline |
+| Task | State | |
 |---|---|---|
-| [Task 1: Workload Hardening](./task-1-workload-hardening/README.md) | **Complete** | 17/17 verification checks pass; original insecure Deployment rejected at admission |
-| [Task 2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | **Complete** | All 7 jobs pass; image signed with cosign keyless, digest committed back, ArgoCD drift detection and self-heal verified |
-| [Task 3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Not started | |
-| [Task 4: Recon & Penetration Testing](./task-4-recon-pentest/README.md) | Not started | |
+| [1: Workload Hardening](./task-1-workload-hardening/README.md) | Done | 17/17 checks; starter Deployment rejected at admission |
+| [2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | Done | 7/7 jobs; image signed keyless, drift self-heal verified |
+| [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Not started | |
+| [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Not started | |
 
-## Tech stack
+## Stack, and why
 
-| Layer | Choice | Why |
-|---|---|---|
-| Cluster | **k3d / k3s** | kind could not boot on this 3.7 GB Docker VM, its node never reached systemd's multi-user target. k3s boots reliably in ~2 min. The brief permits kind/k3d/minikube equally. |
-| Admission | **Pod Security Standards `restricted` + Kyverno** | They fail differently. PSS is compiled into the API server and survives webhook deletion; Kyverno expresses rules PSS cannot (registry, `:latest`, signatures). |
-| Secrets | **Sealed Secrets** | Encrypts to a keypair that never leaves the cluster, so no private key is distributed to operators or CI. SOPS+age needs key distribution; External Secrets needs a backend. |
-| CI/CD | **GitHub Actions + GHCR** | Free runners, and OIDC is what makes cosign keyless signing possible. |
-| Supply chain | **Cosign keyless + Fulcio + Rekor, Syft SBOM** | No long-lived signing key exists to leak. |
-| Delivery | **ArgoCD** | Pull-based, so CI holds no cluster credentials. |
-| Mesh | Istio *(Task 3)* | |
+**k3d/k3s** rather than kind. kind couldn't create a cluster on this machine's
+3.7 GB Docker VM; the node never reached systemd's multi-user target, even
+single-node. k3s boots in about two minutes. The brief allows either.
 
-## Running it locally
+**PSS `restricted` + Kyverno**, both. They fail differently: PSS is in the API
+server and survives someone deleting the webhook, Kyverno expresses rules PSS
+can't (registry, `:latest`, signatures).
+
+**Sealed Secrets** over SOPS+age or External Secrets. SOPS needs a private key
+distributed to operators and CI; Sealed Secrets encrypts to a keypair that never
+leaves the cluster. External Secrets is better at scale but needs a backend.
+
+**GitHub Actions + GHCR**, mainly because the OIDC token is what makes cosign
+keyless signing work at all.
+
+**ArgoCD** so CI holds no cluster credentials. The pipeline commits a digest and
+stops.
+
+## Running it
 
 ```bash
-# Task 1: cluster, hardened workload, policies
 cd task-1-workload-hardening
 ./scripts/deploy.sh
-./scripts/verify.sh          # expect: 17 passed, 0 failed
+./scripts/verify.sh                                    # 17 passed, 0 failed
 
-# Task 2: validate the pipeline's security gates locally
-./task-2-cicd-supply-chain/scripts/verify-gates.sh
-
-# Task 2: GitOps (needs a pushed repo)
-./task-2-cicd-supply-chain/scripts/bootstrap-argocd.sh https://github.com/<you>/<repo>.git
-./task-2-cicd-supply-chain/scripts/demo-drift.sh
+./task-2-cicd-supply-chain/scripts/verify-gates.sh     # scanners + negative tests
+./task-2-cicd-supply-chain/scripts/finish-gitops.sh    # ArgoCD + drift demo
 ```
 
-Prerequisites: Docker, k3d, kubectl, kubeseal. No cloud account required.
+Needs Docker, k3d, kubectl, kubeseal. The scripts find their own tool paths.
 
-> **Environment note.** Built on a 7.3 GB laptop where Docker's VM gets ~3.7 GB.
-> Two workarounds are baked into the scripts: BuildKit cannot read through
-> OneDrive reparse points (build contexts are copied to a temp dir), and k3d
-> writes `host.docker.internal` into the kubeconfig, which resolves to the LAN
-> IP on Windows (rewritten to loopback). Concurrent Trivy scans can starve the
-> cluster's API server on this much memory, `verify-gates.sh` scans once and
-> derives both counts rather than running two passes.
+## Decisions I'd expect to be asked about
 
-## Three decisions worth defending
+**The app's vulnerabilities are still there.** `app.py` has `yaml.load` RCE on
+`/import`, SSRF on `/fetch`, cleartext PANs on `/transactions`. That's Task 4's
+target. Task 1 contains them instead: RCE lands as uid 10001 on a read-only
+filesystem with no capabilities and no ServiceAccount token.
 
-1. **The application's vulnerabilities are left intact.** `app-source/app.py`
-   has `yaml.load` RCE on `/import`, SSRF on `/fetch`, and cleartext PANs on
-   `/transactions`. They are Task 4's authorised target. Task 1 *contains* them
-   instead: RCE lands as uid 10001, read-only filesystem, no capabilities, no
-   ServiceAccount token to pivot with.
+**No RBAC persona, admin included, can read Secrets or exec into a pod.** Sealing
+secrets in git is pointless if a developer can just read the decrypted value out
+of the cluster. Admins manage SealedSecrets; exec sits in a break-glass Role
+bound to nobody.
 
-2. **No RBAC persona, including `admin`, can read Secrets or exec into a pod.**
-   Sealing secrets in git is theatre if any developer can `kubectl get secret -o
-   yaml` the decrypted value. Admins manage *SealedSecrets* (ciphertext); exec
-   sits in a break-glass Role bound to nobody.
+**The CVE gate blocks on fixable and warns on unfixed.** 182 CRITICAL/HIGH on
+this image, 149 fixable, 33 not. Blocking on the 33 leaves the pipeline
+permanently red with no action that turns it green, so it gets switched off and
+the 149 start shipping too. The 21 suppressions in `.trivyignore` are listed by
+CVE id with owner and review date, not by path, so a new finding in the same
+files still breaks the build.
 
-3. **The CVE gate blocks on fixable findings and warns on unfixed ones.**
-   Measured: 182 CRITICAL/HIGH, 149 fixable, 33 unfixed. Blocking on the 33
-   would leave the pipeline permanently red with no action that could turn it
-   green, so the gate would be disabled within a week, and the 149 would then
-   ship unnoticed too.
+## Environment
 
-## How AI was used
+7.3 GB laptop, Docker VM gets ~3.7 GB. A few things baked into the scripts as a
+result:
 
-Claude (Claude Code) was used throughout as a pair-programmer: drafting
-manifests and workflows, and, most usefully, running the verification loops
-that caught real defects. Several bugs in this repository were found that way
-rather than by inspection, and are documented where they occurred rather than
-quietly fixed:
+- BuildKit can't read through OneDrive reparse points, so build contexts get
+  copied to a temp dir first.
+- k3d writes `host.docker.internal` into the kubeconfig, which resolves to the
+  LAN IP on Windows and times out. Rewritten to loopback, and redone on every
+  cluster restart since the API port changes.
+- Two concurrent Trivy scans starved the API server. `verify-gates.sh` scans once
+  and derives both counts.
+- `bash script.sh` from PowerShell gets WSL bash, not Git Bash. Different `$HOME`,
+  different mount points. Scripts handle both.
+
+## On AI use
+
+The brief allows it, so: I used Claude Code throughout for drafting manifests
+and workflows, and more usefully for running verification loops.
+
+Worth being specific, because the useful part wasn't the generation. Several
+real defects only surfaced from running things rather than reading them:
 
 - A `.gitignore` rule (`**/secrets/*.yaml`) that would have excluded the
-  SealedSecret from git, silently breaking the deployment and GitOps sync.
-- A `.gitleaks.toml` block that re-declared a built-in rule without a `regex`,
-  which replaces the rule with an empty one and disables detection.
+  SealedSecret from git and silently broken both the deploy and the ArgoCD sync.
+- A `.gitleaks.toml` block that re-declared a built-in rule with no `regex`,
+  which replaces it with an empty one and turns detection off while still
+  reporting green.
 - A secrets-gate test fixture that embedded its probe token as a literal, so it
-  failed the very gate it validated.
-- A negative test that passed vacuously twice, first because it used
-  well-known example credentials that gitleaks ignores by design, then because
-  the probe file was dot-prefixed and therefore skipped.
+  failed the gate it existed to validate.
+- A drift demo that scaled replicas and printed success unconditionally, against
+  an Application configured to ignore replica differences. It asserted a control
+  was working while the transcript above it showed nothing had happened.
 
-Every artifact here was executed and verified locally, not just generated. The
-reasoning in each task README is mine to defend.
+The common thread is that a check reporting green tells you nothing until you've
+watched it go red. That's why `verify-gates.sh` plants a known-bad input and the
+drift demo computes its result from observed state.
 
-## Submission checklist
+Everything here was run and verified, not just written. The reasoning in each
+task README is mine.
 
-- [ ] Repository is public
-- [x] Top-level README links every task folder
-- [x] Each task has its own README (approach + reproduction + verification)
-- [x] Architecture diagram present (Tasks 1 and 2)
-- [ ] Screenshots/recordings for every checklist item, see [docs/screenshots-guide.md](./docs/screenshots-guide.md)
-- [ ] Task 4 report delivered as a standalone PDF or Markdown file
+## Submission
+
+- [ ] Repository public
+- [x] Top-level README links each task
+- [x] Per-task README with approach, reproduction, verification
+- [x] Architecture diagrams (Tasks 1 and 2)
+- [ ] Screenshots, see [docs/screenshots-guide.md](./docs/screenshots-guide.md)
+- [ ] Task 4 report as standalone PDF/Markdown

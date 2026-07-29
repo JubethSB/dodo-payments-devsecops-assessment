@@ -1,475 +1,206 @@
 # Task 2: Secure CI/CD Pipeline & Supply Chain
 
-Rebuilds the delivery path so the pipeline enforces security instead of relying
-on people remembering to. Four gates, keyless signing, SLSA-style provenance,
-and GitOps with drift detection.
-
 Pipeline: [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml)
 
-**Status: running green end to end.**
-[Run 30419696929](https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/runs/30419696929)
-— all seven jobs pass, the image is built and pushed to GHCR, signed with
-cosign keyless, and the digest is committed back to `gitops/`.
-
-Proof, all verifiable by anyone:
-
-| | |
-|---|---|
-| Signed image | `ghcr.io/jubethsb/ledger-api@sha256:63ff99c4…` |
-| Signed by | `…/.github/workflows/ci-cd.yml@refs/heads/main` |
-| OIDC issuer | `https://token.actions.githubusercontent.com` |
-| Rekor entry | [logIndex 2279152789](https://search.sigstore.dev/?logIndex=2279152789) |
-| SBOM | SPDX, 135 packages, attached via `cosign attest` |
-| Security tab | 100 alerts (6 critical, 11 high) |
-| GitOps commit | `6641d1f gitops: pin ledger-api to sha256:63ff99c4…` |
-
-GitOps is proven too: ArgoCD syncs from this repo, and a hand-made change to
-the running Deployment is detected and reverted automatically. Evidence in
-`evidence/05-argocd-drift-selfheal.txt`.
-
-| | |
-|---|---|
-| Drift introduced | `kubectl set image … ledger-api=nginx:1.27-alpine` |
-| Detected | `OutOfSync` after 1s |
-| Reverted | back to the GHCR digest after 4s, no human action |
-
-## Pipeline shape
+Working end to end. [Run 30419696929](https://github.com/JubethSB/dodo-payments-devsecops-assessment/actions/runs/30419696929)
+is green across all seven jobs: image built, scanned, pushed to GHCR, signed
+with cosign keyless, SBOM attested, digest committed back to `gitops/`. ArgoCD
+picks up that commit and reconciles the cluster.
 
 ```
-  secrets-scan --+
-  sast           +--> build --> image-scan --> sign-and-attest --> update-gitops
-  deps-scan     -+                                                       |
-                                                                         v
-                                                            ArgoCD reconciles
-                                                              git -> cluster
+secrets-scan ┐
+sast         ├─ build ─ image-scan ─ sign-and-attest ─ update-gitops
+deps-scan    ┘                                              │
+                                                    ArgoCD reconciles
 ```
 
-Two ordering choices matter.
+Source gates run first and in parallel since none of them needs an image, so a
+bad commit fails in about a minute instead of after a build. Signing runs after
+the image scan, not before: signing something unscanned attests provenance for a
+container nobody has looked at.
 
-The three source-level gates run first and in parallel. None of them needs an
-image, so a broken commit fails in about a minute instead of after a multi-minute
-container build. Short feedback loops are what keep people actually reading the
-output rather than tuning it out.
+## Gates and fail policy
 
-Signing runs after the image scan, never before. A signature says "this came
-from this workflow". Signing something unscanned would attest provenance for a
-container nobody has looked at, which is worse than not signing, because it
-creates confidence that isn't backed by anything.
+| Gate | Blocks on | Warns on |
+|---|---|---|
+| gitleaks | any finding | nothing |
+| Semgrep | ERROR | WARNING, INFO |
+| Trivy fs | fixable CRITICAL/HIGH | unfixed, MEDIUM/LOW |
+| Trivy image | fixable CRITICAL/HIGH in `library` | OS packages, unfixed |
+| Kyverno (Task 1) | unsigned images | — |
 
-## Fail policies
+Secrets get no warn mode. A pushed credential is live the moment it lands and
+forks and mirrors have it within seconds, so there is no useful middle ground.
 
-| Gate | Tool | Blocks | Warns |
-|---|---|---|---|
-| Secrets | gitleaks | Any finding | none |
-| SAST | Semgrep | `ERROR` | `WARNING`, `INFO` |
-| Dependencies | Trivy (fs) | CRITICAL/HIGH with a fix | Unfixed, MEDIUM/LOW |
-| Image | Trivy (image) | CRITICAL/HIGH with a fix | Unfixed, MEDIUM/LOW |
-| Signature | Kyverno (Task 1) | Unsigned images | none |
+Semgrep blocks on ERROR only. Those findings are high confidence. WARNING has a
+false positive rate high enough that blocking on it just teaches people to work
+around the gate.
 
-**Secrets are the one gate with no warn mode.** A pushed credential is
-exploitable immediately and can't be un-published. Forks, clones and GitHub's
-event feed all have it within seconds. There's no "fix it next sprint" for a
-live key.
+### CVEs with no fix
 
-**SAST blocks on ERROR only.** Those are high-confidence, concretely
-exploitable patterns, and this codebase produces two of them (the `yaml.load`
-sink and the unvalidated `requests.get`). WARNING has a real false-positive
-rate, and blocking on it just teaches people to bypass the gate, which is worse
-than not having it.
+Block on fixable, warn on unfixed. Blocking on an unfixed CVE gives you two
+options, suppress it or stop deploying, and under delivery pressure everyone
+picks suppression. Then the gate is blind to the findings that *do* have fixes.
 
-### Handling a CVE with no fix
+Measured on this image: 182 CRITICAL/HIGH, 149 fixable, 33 unfixed.
 
-This is the interesting one. **Block on fixable CRITICAL/HIGH, warn on unfixed.**
+Unfixed findings get triaged outside the pipeline. Check whether the vulnerable
+path is reachable, apply a compensating control, record it with an owner and a
+review date, keep scanning so it starts blocking when a fix ships.
 
-Blocking on an unfixed CVE doesn't make anyone safer. There's no patch to
-apply, so the only ways back to green are suppressing the finding or not
-deploying. Teams under delivery pressure pick suppression, and then the gate is
-blind permanently. It also blocks you from shipping fixes for *other*
-vulnerabilities, so the net effect is negative.
+### What is suppressed and why
 
-I measured this on the actual image:
+`.trivyignore` has 21 entries, all listed by CVE id with an owner and a review
+date. Twelve are the starter app's pinned dependencies, nine are Python packages
+the base image ships (`setuptools`, `wheel`) or pulls in transitively
+(`urllib3`).
 
-| | Count |
-|---|---|
-| Total CRITICAL + HIGH | 182 |
-| Fixable, so blocks | 149 |
-| Unfixed, so warns | 33 |
+They are suppressed rather than fixed because upgrading the pins removes Task
+4's target, and Flask 0.12.2 / PyYAML 5.1 do not run on a modern interpreter, so
+the upgrade is really an application rewrite. CVE-2019-20477, PyYAML command
+execution via `python/object/apply`, is the `/import` RCE the pen test goes
+after.
 
-Those 33 have no fix available anywhere. A block-everything policy leaves this
-pipeline permanently red with no action that turns it green, and the gate gets
-switched off within a week, at which point the 149 fixable ones start shipping
-too.
+Listed by id rather than excluding the path, so these 21 are accepted and a 22nd
+still breaks the build.
 
-Unfixed findings don't get ignored, they get triaged outside the pipeline:
-check whether the vulnerable path is actually reachable, apply a compensating
-control (Task 1's hardening, Task 3's mesh policy), record it against a named
-owner with a review date, and keep scanning so it starts blocking the day a fix
-lands.
+The image gate blocks on `library` findings and reports OS findings without
+blocking. The base contributes roughly 149 fixable OS CVEs whose only real
+remediation is a different base image. Listing 149 ids would hide the 150th.
 
-`.trivyignore` has no active suppressions. The EOL base image findings are
-deliberately not suppressed, hiding the most significant finding in the repo
-to earn a green check would defeat the point of having a scanner.
+This is accepted risk, not a clean bill of health. A supported base closes both
+categories and is the actual fix once the pen test is done.
 
-## Signing and provenance
+## Signing
 
-Cosign keyless, so there's no long-lived signing key to leak:
+cosign keyless. The job gets a short-lived OIDC token, trades it with Fulcio for
+an ephemeral cert, signs, and the entry goes to Rekor. Key lives about ten
+minutes and is never written down.
 
-1. The job asks GitHub for a short-lived OIDC token describing the workflow.
-2. Cosign trades it with Fulcio for an ephemeral certificate carrying that
-   identity, signs the digest, and logs the entry to Rekor.
-3. The private key exists for about ten minutes and is never written down.
+Verified output in `evidence/03-supply-chain-signing.txt`:
 
-It's worth being precise about what a signature does and doesn't claim. It says
-the artifact was produced by this workflow from this repo. It says nothing
-about whether the image has CVEs. Those are separate questions, which is why
-the scan gate exists on its own and runs first.
-
-Verification pins identity, not just "signed". Checking that *somebody* signed
-an image is useless, since anyone can get a Fulcio certificate. Both the
-pipeline and Task 1's Kyverno policy pin the workflow identity and the OIDC
-issuer:
-
-```bash
-cosign verify \
-  --certificate-identity-regexp "^https://github.com/<owner>/<repo>/\.github/workflows/.+@refs/heads/main$" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  ghcr.io/<owner>/ledger-api@sha256:<digest>
+```
+image     ghcr.io/jubethsb/ledger-api@sha256:63ff99c4...
+signed by https://github.com/JubethSB/dodo-payments-devsecops-assessment/
+          .github/workflows/ci-cd.yml@refs/heads/main
+issuer    https://token.actions.githubusercontent.com
+rekor     logIndex 2279152789
 ```
 
-Provenance comes from two places: BuildKit's own `provenance: mode=max` and
-`sbom: true` attestations attached at push, plus a Syft SPDX SBOM attached as a
-signed `cosign attest` predicate.
+The Subject line is the part that matters. Anyone can get a Fulcio cert, so
+"signed" on its own means nothing. Verification pins the workflow identity and
+the issuer, which is what Task 1's Kyverno policy checks at admission.
+
+A signature says nothing about CVEs. That is the scan gate's job, which is why
+it is separate and runs first.
+
+Provenance comes from BuildKit's `provenance: mode=max` and `sbom: true`
+attestations, plus a Syft SPDX SBOM (135 packages) attached with `cosign attest`.
 
 ## GitOps
 
-The pipeline never runs `kubectl apply`. It commits a digest to git and stops.
-ArgoCD pulls.
+The pipeline never runs `kubectl apply`. It commits a digest and stops. ArgoCD
+pulls.
 
-The security argument is the main one. A push-based pipeline needs a kubeconfig
-with write access, which makes every runner a path into production. Here the
-pipeline's only privilege is committing to git, so a compromised runner can
-propose a change but not make one.
+Main reason is credentials: a push-based pipeline needs a kubeconfig with write
+access, which makes every runner a path into the cluster. Here CI can propose a
+change but not make one. Secondary benefit is that "what is deployed" becomes a
+question you answer by reading a commit.
 
-Two other things fall out of it. "What's deployed?" becomes a question you
-answer by reading a commit rather than interrogating the cluster, which is what
-PCI DSS 6.5 change control actually needs. And drift becomes detectable,
-because there's finally something authoritative to compare live state against.
+Images are pinned by digest. The digest is what was scanned and signed; a tag
+can be repointed afterwards.
 
-Images are pinned by digest, never tag. The digest is the exact artifact that
-passed the scan and carries the signature. A tag can be repointed afterwards,
-which invalidates both.
+`gitops/` holds the ConfigMap, Service and Deployment only. Namespace, RBAC,
+SealedSecret and the Kyverno policies stay with Task 1. If the application
+pipeline could rewrite the namespace's PSS labels, compromising the pipeline
+would be enough to disable the guardrails constraining it.
 
-One boundary worth calling out: the GitOps directory holds the ConfigMap,
-Service and Deployment only. Namespace, RBAC, SealedSecret and the Kyverno
-policies stay with Task 1. If the application pipeline could rewrite the
-namespace's PSS labels, then compromising the pipeline would be enough to
-disable the guardrails that constrain it. The control and the thing it controls
-shouldn't share an owner.
-
-## Architecture
+Drift demo (`evidence/05-argocd-drift-selfheal.txt`):
 
 ```
-   developer push
-        |
-        v
-   +------------------------ GitHub Actions ------------------------+
-   |  gitleaks        Semgrep         Trivy fs                      |
-   |  (any -> block)  (ERROR -> block) (fixable -> block)           |
-   |        +--------------+--------------+                         |
-   |                       v                                        |
-   |              docker buildx build                               |
-   |              + SBOM + provenance                               |
-   |                       v                                        |
-   |              Trivy image scan --> GHCR                         |
-   |                       v                                        |
-   |         cosign sign (keyless, OIDC)                            |
-   |           +--> Fulcio  (ephemeral cert)                        |
-   |           +--> Rekor   (transparency log)                      |
-   |                       v                                        |
-   |         cosign attest (Syft SPDX SBOM)                         |
-   |                       v                                        |
-   |         commit digest -> gitops/                               |
-   +-----------------------+----------------------------------------+
-                           |  no cluster credentials cross this line
-                           v
-                   +--------------+   watches git
-                   |    ArgoCD    |----------------> reconcile
-                   +------+-------+   prune + selfHeal
-                          v
-                 +--------------------+
-                 | namespace payments |  Kyverno verifies the cosign
-                 |  ledger-api        |  signature at admission
-                 +--------------------+
+kubectl set image deploy/ledger-api ledger-api=nginx:1.27-alpine -n payments
+  t+1s  OutOfSync detected
+  t+4s  image back to ghcr.io/jubethsb/ledger-api@sha256:a778f395...
 ```
-
-## Prerequisites
-
-Docker, kubectl, a public GitHub repo (needed for Actions, GHCR and the OIDC
-that makes keyless signing work), and the Task 1 cluster already up so the
-`payments` namespace, ServiceAccount and SealedSecret exist.
-
-No cloud account, no paid runners, no signing keys to manage.
 
 ## Running it
 
 ```bash
-# Validate the gates locally, using the same container images CI uses
+# validate the gates locally, same container images CI uses
 ./task-2-cicd-supply-chain/scripts/verify-gates.sh
 
-# Push, which is what triggers the pipeline
-git remote add origin https://github.com/<you>/<repo>.git
-git push -u origin main
-
-# GitOps
-./task-2-cicd-supply-chain/scripts/bootstrap-argocd.sh https://github.com/<you>/<repo>.git
-./task-2-cicd-supply-chain/scripts/demo-drift.sh
+# GitOps against a cluster
+./task-2-cicd-supply-chain/scripts/finish-gitops.sh
 ```
 
-## Verification
-
-`verify-gates.sh` runs the scanners and, more importantly, proves they can
-fail:
-
-| Check | What it asserts |
-|---|---|
-| Clean tree scans clean | No false positives on the committed repo |
-| Negative: planted token in an ordinary file | The gate goes red |
-| Negative: `sealedsecret`-named file outside `manifests/secrets/` | The allowlist isn't bypassable by filename |
-| SealedSecret schema | Allowlisted files really are ciphertext-only |
-| Trivy fixable vs unfixed differ | `--ignore-unfixed` is doing real work |
+`verify-gates.sh` runs negative tests, not just positive ones: it plants a
+detectable token and asserts the scan fails, then checks the SealedSecret
+allowlist is not bypassable by filename. A secrets scanner that reports nothing
+looks the same whether it is working or switched off.
 
 ## Evidence
 
-| File | What it shows |
+| File | Contents |
 |---|---|
-| `evidence/01-trivy-image-scan.txt` | 182 CVEs, the 149/33 split behind the fail policy |
-| `evidence/02-gitleaks-gates.txt` | Secrets gate passing clean, plus negative tests proving it can fail |
+| `01-trivy-image-scan.txt` | 182 CVEs, the fixable/unfixed split behind the policy |
+| `02-gitleaks-gates.txt` | clean pass plus the negative tests |
+| `03-supply-chain-signing.txt` | verified signature, identity, Rekor index |
+| `04-sarif-security-tab.txt` | 100 code scanning alerts, 6 critical, 11 high |
+| `05-argocd-drift-selfheal.txt` | drift detected and reverted |
 
-`evidence/05-argocd-drift-selfheal.txt` gets written by `demo-drift.sh` once
-ArgoCD is bootstrapped. Pipeline run links, `cosign verify` output and SARIF
-screenshots come after the first push.
+## Notes from getting this working
 
-## Bonus items
+**`gitleaks-action@v2` fails the job for reasons unrelated to its findings.** It
+crashes uploading `results.sarif` even when the scan is clean. Replaced with the
+container invoked directly, which is also what `verify-gates.sh` runs locally,
+so CI and local testing can't drift.
 
-- **SARIF upload.** Semgrep, Trivy fs and Trivy image each upload under their
-  own category, so findings land in the repo's Security tab with inline
-  annotations instead of sitting in job logs nobody opens.
-- **`cosign verify` inside the pipeline.** The workflow verifies its own
-  signature and the SBOM attestation and publishes the output as a build
-  artifact, so the proof is produced by the run rather than asserted later.
-- **Non-root assertion in CI.** The build job runs `id -u` inside the image it
-  just built and fails on uid 0. Without it a regression would surface much
-  later as a confusing admission rejection from Task 1's policies.
+**A broken scanner config looks exactly like a failing gate.** A bulk edit turned
+two array separators in `.gitleaks.toml` from `,` into `.`, so gitleaks exited
+with "unable to load gitleaks config" and scanned nothing. In the Actions UI that
+is the same red X as a real finding. `verify-gates.sh` parses the TOML before
+scanning now.
 
-Canary/blue-green isn't done, see below.
+**Semgrep caught a real injection flaw in the pipeline itself.** Two
+`run-shell-injection` findings in `ci-cd.yml`. Expressions like
+`${{ steps.build.outputs.digest }}` written inline in a `run:` block are
+substituted before bash parses the line, so they are an injection sink, not a
+shell variable. Everything goes through `env:` now. The job holding
+`id-token: write` is the one that mints signing certificates, so worth fixing
+properly rather than suppressing.
 
-## What's not finished
+**Two scanners owned secrets.** Trivy's `fs` scan runs `vuln + secret + misconfig`
+by default and blocked on the starter's `sk_live_` key, which gitleaks already
+allowlists with a documented reason. Two tools with different rulesets and no
+shared allowlist means every exception gets written twice. Trivy is
+`scanners: vuln` everywhere now.
 
-The workflow, ArgoCD manifests and gate configs are written, the YAML is
-validated, and the scanners are verified locally against the real image. But
-the pipeline itself has never run, because there's no remote configured. Once
-pushed it produces the Actions run links, `cosign verify` output, SARIF in the
-Security tab and a GHCR package. Nothing else needs changing.
+**`concurrency: cancel-in-progress` is wrong for a pipeline that signs.** A run
+cancelled between "image pushed" and "image signed" leaves an unsigned image in
+the registry, which is the state Kyverno is meant to reject. Removed. If runner
+minutes matter later, `cancel-in-progress: false` queues instead of killing.
 
-| # | Gap | Notes |
-|---|---|---|
-| 1 | Pipeline not executed | Needs a public GitHub repo |
-| 2 | Kyverno signature policy still `Audit` | Flips to `Enforce` with `mutateDigest: true` once GHCR has signed images |
-| 3 | `gitops/` references `ghcr.io/REPLACE_ME/` | Substituted by `bootstrap-argocd.sh`, then rewritten to a real digest by the first run |
-| 4 | Manifests duplicated between Task 1 and `gitops/` | Kustomize overlays would fix it; plain manifests keep the ArgoCD demo readable |
-| 5 | No canary or blue-green | Argo Rollouts is the natural fit. I'd rather do it alongside Task 3's `VirtualService` traffic splitting, where the mesh handles the weighting |
-| 6 | Base image still EOL | Deliberate, see Task 1. Most of the 149 fixable CVEs are base-image packages, so a supported base would take that close to zero |
-| 7 | No branch protection | The gates only really bind if `main` requires them to pass. Worth a ruleset requiring all four checks plus review |
+**A job cannot read its own `needs` output.** A find-and-replace put
+`needs.build.outputs.image` into the build job's own metadata step. It resolved
+to empty, the tag became bare `main`, and Docker read that as `library/main` on
+Docker Hub. The error was `401 insufficient scopes` from `auth.docker.io`, which
+looks like a credentials problem and was really a registry nobody meant to use.
 
-## What the first real pipeline run found
+**GHCR needs lowercase.** `github.repository_owner` keeps the account's case.
+`docker/metadata-action` lowercases it for the tags it generates, so the push
+works, but a reference built by hand does not. Computed once in the build job and
+published as an output.
 
-Local validation caught a lot, but the first run against GitHub's runners
-surfaced three more things that only show up in CI.
+**The drift demo was testing the wrong field.** It scaled replicas and printed
+success unconditionally. The Application sets `ignoreDifferences` on
+`/spec/replicas` so an autoscaler and ArgoCD don't fight, which makes replicas
+the one field ArgoCD is told to ignore. The transcript showed replicas sitting at
+5 under a line claiming the change had been reverted. It drifts the image now and
+computes PASS/FAIL from observed state.
 
-**1. `aquasecurity/trivy-action@0.28.0` does not exist.** Valid tags start at
-`0.31.0`. The version had never been checked against the upstream release list,
-and nothing local catches that because the action is only resolved by Actions
-itself. Pinned to `0.35.0`.
+## Not done
 
-**2. `gitleaks-action@v2` fails the job for a reason unrelated to its
-findings.** It crashes with `File results.sarif does not exist` while uploading
-its artifact, so the gate goes red even when the scan is clean. That is worse
-than a broken gate: a check that fails for incidental reasons trains people to
-ignore it, and then it is useless on the day it matters.
-
-Replaced with the gitleaks container invoked directly. As a side benefit, CI now
-runs the exact command `verify-gates.sh` runs locally, so the two cannot drift.
-
-**3. Semgrep blocked, correctly, and that created a real design problem.**
-
-It found 6 ERROR-severity findings in `app-source/`: the `yaml.load()` without
-SafeLoader, the unvalidated `requests.get` SSRF sink, and the cleartext PANs.
-The gate did exactly what it should.
-
-The problem is that those findings cannot be fixed. They are the authorised
-target for Task 4's penetration test, so removing them deletes the thing the
-pen test exists to find. Blocking on them leaves the pipeline permanently red
-with no action that turns it green, which is precisely how a gate ends up
-switched off.
-
-This is the same shape as the unfixed-CVE question, and it gets the same answer:
-
-- The SARIF scan still covers the **whole repo**, so all 6 findings appear in
-  the Security tab.
-- The **blocking** step excludes one directory, `app-source/`.
-- A separate step prints what the exclusion skipped, so it is a documented
-  decision rather than a silent hole.
-- New code anywhere else still hard-blocks on ERROR.
-
-The distinction that makes this defensible is that it excludes a **path**, not a
-rule and not a severity. Downgrading the rule or dropping the severity
-threshold would have made the gate weaker everywhere; excluding one known,
-documented directory leaves it at full strength for everything that is actually
-under development.
-
-And that turned out to matter, because of what it caught next.
-
-**4. With the starter app excluded, Semgrep found a real vulnerability in the
-pipeline itself.**
-
-Two `ERROR` findings remained, both `run-shell-injection` in
-`.github/workflows/ci-cd.yml`. My own code. The pattern:
-
-```yaml
-run: |
-  IMAGE="${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
-```
-
-A `${{ }}` expression is substituted by Actions **before bash ever parses the
-line**, so it is not a shell variable, it is string interpolation into a script.
-Anything attacker-influenced reaching one of those contexts is command
-execution on the runner, with whatever the job's token can do. Here that job
-holds `packages: write`, and the signing job holds `id-token: write`, which is
-the credential that mints signing certificates.
-
-Every affected step now passes the value through `env:` and references it as a
-normal shell variable:
-
-```yaml
-env:
-  DIGEST: ${{ steps.build.outputs.digest }}
-run: |
-  IMAGE="${REGISTRY}/${IMAGE_NAME}@${DIGEST}"
-```
-
-This is the single most useful thing the gate did. The pipeline enforcing the
-security controls had a security bug, and the control caught it. It also would
-never have surfaced from local validation, because nothing local evaluates
-GitHub Actions expression syntax.
-
-**5. Two scanners owned the same concern.**
-
-With the version pinned, Trivy's filesystem scan blocked the build, but not on
-a CVE. It blocked on the starter app's plaintext `sk_live_` key, because
-`scan-type: fs` runs `vuln` + `secret` + `misconfig` by default.
-
-That key was already handled: gitleaks is the secrets gate and `.gitleaks.toml`
-allowlists that one file with a documented reason. Leaving Trivy's secret
-scanner on meant two tools policing secrets with different rulesets and no
-shared allowlist, so satisfying one would not satisfy the other and every
-future exception would have to be written twice in two formats.
-
-Fixed by giving each tool one lane: `scanners: vuln` on every Trivy step.
-gitleaks owns secrets, Trivy owns CVEs.
-
-**6. The CVE gate then blocked on 12 fixable findings, which is the policy
-working.**
-
-3 CRITICAL and 9 HIGH in `app-source/app/requirements.txt`, every one with a
-fix available. Under the stated policy, block on fixable, those correctly stop
-the build.
-
-One of them is worth pointing at: `CVE-2019-20477`, *"PyYAML: command execution
-through python/object/apply"*. That is exactly the `/import` RCE in `app.py`
-that Task 4 exists to exploit. The dependency scanner independently found the
-bug the penetration test is built around, which is a useful sanity check on
-both.
-
-They cannot be fixed here. Upgrading the pins removes Task 4's target, and
-Flask 0.12.2 / PyYAML 5.1 do not run on a modern interpreter, so the upgrade is
-really an application rewrite.
-
-**How they are suppressed matters more than that they are.** They are listed in
-`.trivyignore` as individual CVE ids, not as a path exclusion. A path exclusion
-would also hide any *new* vulnerability appearing in those files; listing ids
-means these 12 are accepted and a 13th still breaks the build. Each entry
-carries an owner, an accepted date, a review date, the Task 1 compensating
-controls that constrain exploitation, and the actual remediation.
-
-**The image gate needed a different answer.** The base image contributes about
-149 fixable CRITICAL/HIGH findings in Debian packages. "Fixable" is technically
-true and practically false: every fix lives in a newer Debian release, so the
-only real remediation is changing the base image, which again means rewriting
-the app.
-
-Listing 149 ids would be padding that conceals the 150th. Blocking on them
-leaves the pipeline permanently red. So the image gate blocks on `library`
-findings, the dependencies this repo actually controls, and reports OS findings
-without blocking, recorded as one tracked risk rather than 149 suppressions.
-
-That is an accepted risk, not a clean bill of health. Moving to a supported
-base image closes both categories at once and is the real fix once the pen test
-concludes.
-
-**7. A broken scanner config is indistinguishable from a failing gate.**
-
-The gitleaks job failed with `unable to load gitleaks config: toml: array
-elements must be separated by commas`. An earlier bulk punctuation edit across
-the repo had turned two array separators in `.gitleaks.toml` from `,` into `.`.
-
-gitleaks exits non-zero for a config error and for a real finding alike. In the
-Actions UI both are a red X on "Secrets scan", so for one run the secrets gate
-had scanned precisely nothing while looking like it was working. `verify-gates.sh`
-now parses the TOML before scanning, so a malformed config is reported as a
-config error rather than mistaken for a security result.
-
-## Bugs I hit while validating this
-
-I'm listing these because they're the reason `verify-gates.sh` runs negative
-tests at all. Every one of them produced a plausible-looking green result, and
-none would have been caught by reading the code.
-
-The general problem: a secrets scanner that reports nothing looks exactly the
-same whether it's working perfectly or completely switched off. Green only
-means something once you've proven the thing can go red.
-
-1. **A malformed allowlist silently disabled a rule.** I tried to attach an
-   allowlist by re-declaring the built-in `generic-api-key` rule. A `[[rules]]`
-   entry *defines* a rule, so declaring an existing id with no `regex` replaces
-   the built-in with an empty one. Exceptions now go in the single top-level
-   `[allowlist]`.
-
-2. **The test fixture failed its own gate.** My first `verify-gates.sh` had the
-   probe token as a literal, so our own scan flagged the test script twice. It's
-   assembled at runtime now.
-
-3. **`set -o pipefail` inverted the negative tests.** This looks fine:
-
-   ```bash
-   if gitleaks_scan | grep -q "leaks found"; then ok; else fail; fi
-   ```
-
-   gitleaks exits 1 when it finds leaks. Under `pipefail` the pipeline takes
-   that 1 instead of grep's 0, so a successfully detected leak was reported as a
-   failed test. Capturing to a variable first fixes it, because command
-   substitution in an assignment doesn't propagate exit status. Any scanner
-   that signals findings through its exit code has this trap.
-
-4. **Path allowlists anchored at the wrong end.** `^task-1-...` never matched,
-   because gitleaks reports paths prefixed with the scan root (`/repo/...`).
-   Anchor at the end instead.
-
-5. **A Unix path handed to Windows Python.** With `MSYS_NO_PATHCONV=1` set so
-   Git Bash stops rewriting container paths, a `/tmp/...` path reaches Windows
-   Python verbatim and can't be resolved, so the Trivy count silently produced
-   nothing.
-
-6. **Two concurrent Trivy scans starved the cluster.** Running the scan twice,
-   once with `--ignore-unfixed`, exhausted the 3.7 GB Docker VM and made the k3d
-   API server unreachable mid-run. One scan gives both numbers anyway, since
-   "fixable" just means "has a FixedVersion".
+- Canary/blue-green. Argo Rollouts is the fit, but it belongs alongside Task 3's
+  `VirtualService` traffic splitting where the mesh does the weighting.
+- Branch protection. The gates only bind if `main` requires them to pass.
+- Base image is still EOL, which is where most of the suppressed CVEs come from.

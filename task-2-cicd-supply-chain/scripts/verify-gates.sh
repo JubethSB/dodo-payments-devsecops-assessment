@@ -2,8 +2,8 @@
 #
 # Task 2, prove the security gates actually gate.
 #
-# Runs each scanner locally in the same container image CI uses, and, crucially
-# runs NEGATIVE tests: plant a known-bad input and assert the gate goes red.
+# Runs each scanner locally in the same container image CI uses, and runs
+# NEGATIVE tests: plant a known-bad input and assert the gate goes red.
 #
 # Why the negative tests matter more than the positive ones:
 # a scanner that reports nothing looks exactly the same whether it is working
