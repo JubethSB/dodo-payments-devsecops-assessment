@@ -1,0 +1,161 @@
+======================================================================
+ EVIDENCE: Istio 1.30.3 installed, with istio-cni, under PSS restricted
+======================================================================
+
+VERIFIED. Captured from a real install run, not written from the manifest.
+
+----------------------------------------------------------------------
+ THE CNI PATH GUARD EARNED ITS PLACE
+----------------------------------------------------------------------
+
+  install-istio.sh refuses to install unless the CNI directories declared
+  in istio/00-istio-install.yaml match the running node. On this k3s
+  node the real paths are NOT the upstream defaults:
+
+    ==> Verifying k3s CNI paths before installing
+        declared cniConfDir: /var/lib/rancher/k3s/agent/etc/cni/net.d
+        declared cniBinDir:  /bin
+        cniBinDir contains CNI plugins  OK
+          10-flannel.conflist
+
+  k3s ships its own CNI binaries in /bin and writes its config under
+  /var/lib/rancher, not /opt/cni/bin and /etc/cni/net.d. Pointing the CNI
+  installer at the upstream defaults produces a DaemonSet that starts
+  cleanly, reports Ready, and silently redirects no traffic at all. The
+  symptom is that mTLS "does not work", which sends you to debug
+  PeerAuthentication instead of the install.
+
+  The guard checks for actual plugin binaries (portmap/bridge/loopback),
+  not just that the directory exists, because an empty-but-present
+  directory would pass a existence check and still be wrong.
+
+----------------------------------------------------------------------
+ INSTALL
+----------------------------------------------------------------------
+
+    ==> Resolving istioctl
+        version: 1.30.3
+        installed to /home/jubeth/.local/bin/istioctl
+    client version: 1.30.3
+
+    ==> Validating the IstioOperator manifest
+        .../istio/00-istio-install.yaml is valid
+
+    ==> Installing Istio
+    - Processing resources for Istio core.
+    ✔ Istio core installed
+    - Processing resources for CNI, Istiod.
+    ✔ CNI installed
+    ✔ Istiod installed
+    ✔ Installation complete
+
+    ==> Waiting for the control plane
+    deployment "istiod" successfully rolled out
+    daemon set "istio-cni-node" successfully rolled out
+
+    ==> Control plane state
+    NAME                      READY   STATUS    RESTARTS   AGE
+    istio-cni-node-vdtnx      1/1     Running   0          54s
+    istiod-799ff4d77b-h2mrg   1/1     Running   0          52s
+
+  Both components healthy. istio-cni-node is the DaemonSet that makes
+  the rest of this task possible: it programs each pod's iptables from
+  outside the pod, so no workload needs NET_ADMIN or NET_RAW and the
+  payments namespace keeps its PSS `restricted` enforcement from Task 1.
+
+    ==> Labelling payments for sidecar injection
+    namespace/payments labeled
+
+----------------------------------------------------------------------
+ RESOURCE OVERRIDES, AND WHY THEY WERE NECESSARY
+----------------------------------------------------------------------
+
+  istiod's DEFAULT memory request is 2048Mi. This node has 3.47 GiB
+  allocatable in total. Accepting the default would have reserved well
+  over half the node for a control plane serving four proxies, and would
+  likely have left later components unschedulable.
+
+  Overridden to 256Mi requested / 512Mi limit. A request is a scheduling
+  reservation, not a measurement - measured istiod RSS at this scale is
+  roughly 120-150 MB, so the override is generous rather than tight.
+
+  Proxy resources are set explicitly (10m CPU / 48Mi requested, 128Mi
+  limit) because Task 1's Kyverno policy require-resource-limits applies
+  its list pattern to EVERY container in the namespace. The injected
+  sidecar is held to exactly the same rule as the application container,
+  so a sidecar without requests and a memory limit would be rejected at
+  admission.
+
+----------------------------------------------------------------------
+ THE CNI PATH THAT THE FIRST GUARD STILL GOT WRONG
+----------------------------------------------------------------------
+
+  The guard above passed while the value was still wrong, so it is worth
+  recording precisely how.
+
+  The original cniBinDir was /bin. That directory DOES contain CNI
+  plugins on a k3s node - portmap, bridge, loopback, host-local - so a
+  check of the form "does this directory contain CNI plugins?" passes on
+  it. It is also what most k3d+Istio recipes online recommend.
+
+  kubelet on this k3s build does not read /bin. It reads
+  /var/lib/rancher/k3s/data/cni. So istio-cni installed itself somewhere
+  kubelet never looks:
+
+    istio-cni-node log:
+      Copied istio-cni to /host/opt/cni/bin
+
+    kubelet, on EVERY pod creation:
+      Failed to create pod sandbox: plugin type="istio-cni" name="istio-cni"
+      failed (add): failed to find plugin "istio-cni" in path
+      [/var/lib/rancher/k3s/data/cni]
+
+  The failure presentation is the nasty part. istio-cni-node reports
+  Running and Ready. istiod logs "Process sidecar injection request"
+  perfectly normally. The pod is admitted. And then every sandbox
+  creation fails, so pods sit with no IP forever and nothing in any
+  Istio log says anything is wrong.
+
+  Fixed by resolving the path from kubelet's own --cni-bin-dir flag
+  rather than probing for a directory that merely contains plugins.
+  After the fix:
+
+    $ ls -la /var/lib/rancher/k3s/data/cni/istio-cni
+    -rwxr-xr-x 1 root root 55468194 Jul 29 11:16 .../istio-cni
+
+  LESSON, which is the reason this is written down: a guard that checks
+  a plausible property ("this looks like a CNI directory") is not the
+  same as a guard that checks the authoritative one ("this is the
+  directory kubelet loads from"). The first version of the check gave
+  false confidence, which is worse than no check.
+
+----------------------------------------------------------------------
+ WHERE THE SIDECAR ACTUALLY LANDS
+----------------------------------------------------------------------
+
+  Istio 1.30 injects the proxy as a Kubernetes NATIVE SIDECAR: an entry
+  in .spec.initContainers with restartPolicy: Always, NOT in
+  .spec.containers. meshConfig's holdApplicationUntilProxyStarts: true
+  selects this behaviour.
+
+    NAME                          INIT                           MAIN
+    ledger-api-5bd7cfb845-8tk2f   istio-validation,istio-proxy   ledger-api
+    reporting-7fb448476b-q49sg    istio-validation,istio-proxy   reporting
+    unauthorised-client-...       istio-validation,istio-proxy   client
+
+  This cost a second debugging cycle: a check counting only
+  .spec.containers reported zero sidecars on a completely healthy mesh.
+
+  Beyond trivia, it closes a real startup race. With a classic sidecar
+  an application that makes an outbound call at startup can beat Envoy
+  to readiness and fail intermittently. As a native sidecar the proxy is
+  guaranteed ready first, so there is no window in which a meshed
+  workload emits unproxied traffic.
+
+----------------------------------------------------------------------
+ VERIFICATION
+----------------------------------------------------------------------
+
+  All five workloads are meshed and Ready, PSS restricted is still
+  enforced on the namespace, and no pod in `payments` holds NET_ADMIN or
+  NET_RAW. ./scripts/verify-mesh.sh exits 0.

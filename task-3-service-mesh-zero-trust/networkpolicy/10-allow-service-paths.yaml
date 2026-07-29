@@ -1,0 +1,133 @@
+# The explicit allows that carve holes in 00-default-deny.yaml.
+#
+# Each rule names one real call path. Nothing here is "allow the namespace to
+# talk to itself", which is the shortcut that turns a default-deny into
+# decoration.
+---
+# 1. reporting -> ledger-api on 8080.
+#
+# Expressed twice, as egress from the caller and ingress to the callee, because
+# a default-deny on BOTH directions means a single-sided rule is not enough:
+# the packet has to be permitted leaving reporting and arriving at ledger-api.
+# Forgetting the second half produces a timeout that looks like the callee is
+# down.
+#
+# Note what this rule CANNOT express, and why the AuthorizationPolicy in
+# istio/20-authorization-policy.yaml is not redundant with it: this permits any
+# pod carrying the label `app.kubernetes.io/name: reporting` to open a TCP
+# connection to port 8080. It cannot distinguish a genuine reporting pod from
+# any other pod that acquires that label, cannot tell GET from POST, and cannot
+# see which path is requested. Labels are an assertion by whoever created the
+# pod; the SPIFFE identity in the mesh policy is an assertion backed by a
+# private key.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-reporting-egress-to-ledger-api
+  namespace: payments
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ledger-api
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ledger-api-ingress-from-reporting
+  namespace: payments
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reporting
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# 2. Kubelet health probes.
+#
+# THIS RULE EXISTS BECAUSE OMITTING IT IS SILENTLY DESTRUCTIVE.
+#
+# Liveness and readiness probes originate from the kubelet on the NODE, not
+# from another pod, so they arrive from the node's address rather than the pod
+# CIDR. A namespace-wide default-deny on ingress drops them. The result is not
+# an obvious network error: readiness fails, the pod leaves its Service
+# endpoints, liveness fails next and the kubelet restarts the container. The
+# namespace appears to enter a crash loop shortly after a NetworkPolicy is
+# applied, which is easy to misattribute to the application or to Istio.
+#
+# Under Istio the probes are additionally rewritten to the pilot-agent on port
+# 15020 (holdApplicationUntilProxyStarts / rewriteAppHTTPProbe), so BOTH the
+# application ports and 15020 have to be reachable from the node.
+#
+# ipBlock is used here rather than a podSelector precisely because the source
+# is not a pod. The CIDR below is this k3d cluster's docker network
+# (node internal IP 172.19.0.3); on a different cluster it must be changed to
+# that cluster's node addresses. Left as an explicit, greppable value rather
+# than 0.0.0.0/0 - a wide-open ingress rule to make probes work would undo the
+# default-deny for every external source at the same time.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kubelet-probes
+  namespace: payments
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 172.19.0.0/16
+      ports:
+        - protocol: TCP
+          port: 8080      # ledger-api
+        - protocol: TCP
+          port: 8081      # reporting
+        - protocol: TCP
+          port: 15020     # istio pilot-agent, rewritten probes + merged metrics
+        - protocol: TCP
+          port: 15021     # istio health check port
+---
+# 3. Ingress gateway -> reporting.
+#
+# Scoped to the istio-system namespace and to reporting only. ledger-api is
+# deliberately NOT reachable from the gateway: it holds cardholder data and has
+# exactly one legitimate caller inside the namespace. Exposing it through an
+# ingress would put the PCI-scoped service on the edge, which is the boundary
+# the bonus section argues should stay closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-to-reporting
+  namespace: payments
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: reporting
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: istio-system
+      ports:
+        - protocol: TCP
+          port: 8081

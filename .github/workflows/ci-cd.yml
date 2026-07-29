@@ -154,7 +154,45 @@ jobs:
       # The exclusion is one directory, not a rule or severity change. Any new
       # code anywhere else still hard-blocks on ERROR, which is what this gate
       # is actually for.
-      - name: Block on ERROR (excluding the known-vulnerable starter app)
+      # Second exclusion: manifests/secrets/.
+      #
+      # detected-generic-api-key fires on the SealedSecret's STRIPE_API_KEY
+      # value. It flags that key and not DB_PASSWORD beside it because the rule
+      # matches on the FIELD NAME first (*_API_KEY) and then on entropy, and a
+      # base64 RSA ciphertext is high-entropy by construction.
+      #
+      # The value is ciphertext, encrypted to the Sealed Secrets controller's
+      # public key. Committing it to a public repository is the entire point of
+      # Task 1: the only key that can decrypt it never leaves the cluster.
+      # Evidence in task-1/evidence/05-sealedsecret-key-binding.txt shows what
+      # happens when that ciphertext meets a different cluster - it does not
+      # unseal. A generic entropy rule cannot tell ciphertext from cleartext, so
+      # this is a true false positive rather than an accepted risk.
+      #
+      # Excluded on the BLOCKING step only. The full-repo scan above still sees
+      # it and still ships it to the Security tab, so the finding stays visible
+      # and this stays a decision rather than a silent hole.
+      #
+      # Residual risk, stated plainly: this exclusion is path-based, so a real
+      # cleartext secret committed into manifests/secrets/ would not block the
+      # build either. The gitleaks gate still covers that path and still blocks,
+      # which is why this is narrowed to one directory instead of the rule being
+      # disabled repo-wide.
+      # Third exclusion: task-4-recon-pentest/.
+      #
+      # Task 4 IS the offensive task. Its tree is exploit code and a
+      # deliberately-vulnerable target by design:
+      #   - target/Dockerfile runs the app as root with no USER and injects fake
+      #     secrets (dockerfile.security.missing-user, secret rules fire);
+      #   - scripts/ carry YAML-RCE gadgets, an SSRF driver, and os.system calls
+      #     (python/command-injection rules fire);
+      #   - evidence/ reproduces all of it verbatim.
+      # These are the artifacts the task exists to produce, on an authorised
+      # local target that never ships. Blocking the build on them would be
+      # blocking the deliverable. Same treatment, and same reasoning, as the
+      # Task 1 starter app: excluded on the BLOCKING step only; the full-repo
+      # scan above still reports every one to the Security tab.
+      - name: Block on ERROR (excluding the starter app, sealed ciphertext, pentest artifacts)
         run: |
           semgrep scan \
             --config=p/default \
@@ -163,6 +201,8 @@ jobs:
             --config=p/dockerfile \
             --config=p/kubernetes \
             --exclude='task-1-workload-hardening/app-source/**' \
+            --exclude='task-1-workload-hardening/manifests/secrets/**' \
+            --exclude='task-4-recon-pentest/**' \
             --severity=ERROR \
             --error \
             --metrics=off
@@ -172,12 +212,16 @@ jobs:
         # is a documented decision rather than a silent hole.
         if: always()
         run: |
-          echo "Findings inside the excluded starter app (reported, not blocking):"
+          echo "Findings inside the excluded paths (reported, not blocking):"
           semgrep scan \
             --config=p/default \
             --config=p/security-audit \
             --config=p/python \
+            --config=p/dockerfile \
+            --config=p/kubernetes \
             --include='task-1-workload-hardening/app-source/**' \
+            --include='task-1-workload-hardening/manifests/secrets/**' \
+            --include='task-4-recon-pentest/**' \
             --severity=ERROR \
             --metrics=off || true
 

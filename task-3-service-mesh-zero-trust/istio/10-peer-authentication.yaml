@@ -1,0 +1,49 @@
+# mTLS STRICT for the payments namespace.
+#
+# WHAT THIS ACTUALLY CHANGES
+# ---------------------------------------------------------------------------
+# Istio injects sidecars in PERMISSIVE mode by default. Permissive means an
+# Envoy will accept mTLS *and* plaintext on the same port, choosing per
+# connection. That default exists for migrations - you can mesh a namespace
+# without breaking the un-meshed callers still talking to it - and it is
+# exactly the wrong end state, because a namespace in PERMISSIVE mode looks
+# encrypted on every dashboard while still answering anyone who connects
+# without a certificate.
+#
+# STRICT removes the plaintext listener. A caller without a valid workload
+# certificate is refused at the transport layer, before any HTTP handling and
+# before any AuthorizationPolicy is consulted. That ordering matters for the
+# evidence: a STRICT failure and an authorization failure look different and
+# prove different things.
+#
+#   plaintext to a STRICT port   -> connection reset / TLS error, no HTTP status
+#   authenticated but unauthorised -> HTTP 403 with an RBAC access-denied log
+#
+# SCOPE
+# ---------------------------------------------------------------------------
+# A PeerAuthentication named `default` in a namespace applies to every workload
+# in that namespace. Namespace-wide is deliberate rather than per-workload:
+# a per-workload policy is a list you have to remember to extend, and the
+# failure mode of forgetting is a silently unencrypted service. Namespace-wide
+# means a new workload is STRICT the moment it is created, and relaxing it is
+# an explicit, reviewable act.
+#
+# WHY THIS IS NOT SUFFICIENT ON ITS OWN
+# ---------------------------------------------------------------------------
+# STRICT proves the caller holds a certificate issued by this mesh's CA. It
+# says nothing about WHICH workload it is or whether it should be talking to
+# this service. Every meshed pod in the cluster has a valid certificate, so
+# STRICT alone means "authenticated", not "authorised". The AuthorizationPolicy
+# in 20-authorization-policy.yaml is what turns identity into a decision.
+#
+# Authentication and authorization are separate layers here on purpose, and
+# conflating them is a common way a mesh ends up trusted more than it deserves.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: payments
+spec:
+  # No selector: applies to every workload in the namespace.
+  mtls:
+    mode: STRICT

@@ -1,0 +1,99 @@
+# Default-deny, then explicit allows keyed on workload identity.
+#
+# THE ORDERING RULE THAT MAKES THIS WORK
+# ---------------------------------------------------------------------------
+# Istio evaluates AuthorizationPolicies as: CUSTOM first, then DENY, then
+# ALLOW. Within ALLOW the rule is "if any ALLOW policy matches the workload,
+# the request must match at least one of them, otherwise it is denied".
+#
+# The consequence people get wrong: an ALLOW policy with an EMPTY spec matches
+# every workload it selects and permits nothing, which produces a default-deny.
+# It is not a no-op. That is what `default-deny-all` below is.
+#
+# So the shape is: one empty ALLOW covering the namespace (deny everything),
+# plus narrow ALLOWs that carve out exactly the calls that should exist. Adding
+# a workload to the namespace gives it no reachability until someone writes a
+# rule, which is the property that makes this zero-trust rather than a firewall
+# with a nice UI.
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: default-deny-all
+  namespace: payments
+spec:
+  # No selector -> every workload in the namespace.
+  # No rules    -> nothing is permitted.
+  #
+  # `action` is omitted because ALLOW is the default and stating it alongside
+  # an empty rule set reads like a mistake. The absence of `rules` is the
+  # entire mechanism.
+  {}
+---
+# ledger-api is the PCI-scoped service. Exactly one workload may call it.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-reporting-to-ledger-api
+  namespace: payments
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ledger-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # IDENTITY, NOT ADDRESS.
+            #
+            # This is a SPIFFE ID taken from the client certificate presented
+            # during the mTLS handshake:
+            #
+            #   spiffe://cluster.local/ns/payments/sa/reporting
+            #                          ^^         ^^
+            #                          namespace  service account
+            #
+            # (`principals` takes the ID without the spiffe:// scheme.)
+            #
+            # Why this rather than an IP or a CIDR:
+            #
+            #   - Pod IPs are recycled. An allow-list entry for 10.42.0.29
+            #     silently transfers authority to whatever lands on that
+            #     address next, which in a busy namespace can be minutes later
+            #     and a completely different workload.
+            #   - An IP is an assertion by the network. A SPIFFE ID is an
+            #     assertion by a certificate that the workload had to prove
+            #     possession of a private key to use. Only a pod running under
+            #     the `reporting` ServiceAccount can obtain that key.
+            #   - It survives rescheduling, scaling and node moves without
+            #     anyone editing policy, so the policy stays correct instead of
+            #     drifting into a stale list nobody trusts enough to prune.
+            #
+            # This is also why Task 1's dedicated ServiceAccounts matter here:
+            # if both services shared `default`, this rule could not
+            # distinguish them and the mesh would have no identity to key on.
+            principals:
+              - cluster.local/ns/payments/sa/reporting
+      to:
+        - operation:
+            # Narrow the grant to what reporting actually needs. It aggregates
+            # transactions and serves /summary; it never writes. Allowing the
+            # whole service because one endpoint is needed is how a compromised
+            # caller gets more than the blast radius it should have.
+            methods: ["GET"]
+            paths:
+              - /transactions
+              - /health
+---
+# reporting serves /summary. Left unreachable from inside the namespace on
+# purpose: nothing in `payments` currently calls it, and the ingress gateway
+# path is granted separately in the bonus step (40-gateway.yaml) so that
+# external exposure is an explicit decision rather than a side effect.
+#
+# Deliberately NOT written as a broad "allow anything in the namespace to call
+# reporting". That rule would be convenient and would quietly re-create the
+# flat trust model this task exists to remove.
+#
+# The unauthorised-client pod in 30-unauthorised-client.yaml is covered by
+# default-deny-all with no carve-out, which is what makes it the negative
+# control for the M3 evidence.

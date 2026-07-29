@@ -10,8 +10,18 @@ Runs locally on k3d. No cloud account.
 |---|---|---|
 | [1: Workload Hardening](./task-1-workload-hardening/README.md) | Done | 17/17 checks; starter Deployment rejected at admission |
 | [2: CI/CD & Supply Chain](./task-2-cicd-supply-chain/README.md) | Done | 7/7 jobs; image signed keyless, drift self-heal verified |
-| [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Not started | |
-| [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Not started | |
+| [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Done | Istio mTLS STRICT; SPIFFE authz (200 vs 403); NetworkPolicy; gateway + canary |
+| [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Done | Passive OSINT of dodopayments.tech; 4 exploited findings on the local target, CVSS-scored |
+
+## Engineering handover & design rationale
+
+The [`docs/handover/`](./docs/handover/) directory is the full write-up behind the
+decisions: per-task deep dives (threat model, why each tool over its
+alternatives, the concepts in plain language, verification, and the problems
+actually hit and root-caused), a [repository review & submission audit](./docs/handover/repository-review.md),
+an [interview cheat sheet](./docs/handover/interview-cheat-sheet.md), and an
+[executive summary](./docs/handover/executive-summary.md). Start there if you want
+the *why*, not just the *what*.
 
 ## Stack, and why
 
@@ -36,15 +46,30 @@ stops.
 ## Running it
 
 ```bash
+# Task 1 - hardened workload
 cd task-1-workload-hardening
 ./scripts/deploy.sh
 ./scripts/verify.sh                                    # 17 passed, 0 failed
 
+# Task 2 - pipeline gates + GitOps
 ./task-2-cicd-supply-chain/scripts/verify-gates.sh     # scanners + negative tests
 ./task-2-cicd-supply-chain/scripts/finish-gitops.sh    # ArgoCD + drift demo
+
+# Task 3 - Istio mesh (needs Task 1 running first)
+cd ../task-3-service-mesh-zero-trust
+./scripts/restore-baseline.sh                          # reporting + 2 replicas
+./scripts/install-istio.sh                             # istioctl + CNI path guard + inject
+kubectl apply -f istio/ -f networkpolicy/
+./scripts/verify-mesh.sh                               # mTLS + authz assertions
+
+# Task 4 - local pentest of the bundled vulnerable app (authorised target)
+cd ../task-4-recon-pentest
+./scripts/recon-passive.sh                             # Part A: passive OSINT
+./scripts/pentest-all.sh                               # Part B: build target, exploit, evidence
 ```
 
-Needs Docker, k3d, kubectl, kubeseal. The scripts find their own tool paths.
+Needs Docker, k3d, kubectl, kubeseal, istioctl. The scripts find their own tool
+paths. Task 4's recon needs outbound network for CT logs / DNS.
 
 ## Decisions I'd expect to be asked about
 
@@ -108,9 +133,10 @@ task README is mine.
 
 ## Submission
 
-- [ ] Repository public
+- [x] Repository public
 - [x] Top-level README links each task
 - [x] Per-task README with approach, reproduction, verification
-- [x] Architecture diagrams (Tasks 1 and 2)
+- [x] Architecture diagrams (Tasks 1, 2, 3 in their READMEs; system overview in [docs/architecture-overview.md](./docs/architecture-overview.md))
+- [x] Evidence captured per task under each `evidence/` directory
+- [x] Task 4 report as standalone Markdown ([task-4-recon-pentest/pentest-report.md](./task-4-recon-pentest/pentest-report.md))
 - [ ] Screenshots, see [docs/screenshots-guide.md](./docs/screenshots-guide.md)
-- [ ] Task 4 report as standalone PDF/Markdown
