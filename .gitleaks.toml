@@ -75,4 +75,20 @@ paths = [
   # stringData/data key.
   '''task-\d-[a-z-]+/manifests/secrets/[^/]*sealed-?secret[^/]*\.ya?ml$''',
   '''task-\d-[a-z-]+/gitops/[^/]*sealed-?secret[^/]*\.ya?ml$''',
+  # 4. The Task 4 penetration-test target, evidence, and exploit scripts
+  # Secret exposure IS a finding here, so the artifacts deliberately contain
+  # fake credentials:
+  #   - target/Dockerfile injects a FAKE STRIPE_API_KEY (sk_live_...dummy...) and
+  #     DB_PASSWORD so the RCE-reads-secrets chain has something to steal;
+  #   - the evidence transcripts reproduce those fake values verbatim as proof;
+  #   - pentest-all.sh stands up a mock cloud-metadata service holding a FAKE
+  #     AWS-style key (AKIA...POC) for the SSRF finding.
+  # None are real. All exist only to demonstrate the exposure against the
+  # authorised local target. Scoped to these three Task 4 paths, not the rule;
+  # a real secret committed anywhere else still fails the build. The pen-test
+  # report calls out that a production deployment injects real secrets via
+  # SealedSecrets (Task 1), never as literals.
+  '''task-4-recon-pentest/target/Dockerfile$''',
+  '''task-4-recon-pentest/evidence/[^/]+\.txt$''',
+  '''task-4-recon-pentest/scripts/[^/]+\.sh$''',
 ]

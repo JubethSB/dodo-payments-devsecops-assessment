@@ -178,7 +178,21 @@ jobs:
       # build either. The gitleaks gate still covers that path and still blocks,
       # which is why this is narrowed to one directory instead of the rule being
       # disabled repo-wide.
-      - name: Block on ERROR (excluding the starter app and sealed ciphertext)
+      # Third exclusion: task-4-recon-pentest/.
+      #
+      # Task 4 IS the offensive task. Its tree is exploit code and a
+      # deliberately-vulnerable target by design:
+      #   - target/Dockerfile runs the app as root with no USER and injects fake
+      #     secrets (dockerfile.security.missing-user, secret rules fire);
+      #   - scripts/ carry YAML-RCE gadgets, an SSRF driver, and os.system calls
+      #     (python/command-injection rules fire);
+      #   - evidence/ reproduces all of it verbatim.
+      # These are the artifacts the task exists to produce, on an authorised
+      # local target that never ships. Blocking the build on them would be
+      # blocking the deliverable. Same treatment, and same reasoning, as the
+      # Task 1 starter app: excluded on the BLOCKING step only; the full-repo
+      # scan above still reports every one to the Security tab.
+      - name: Block on ERROR (excluding the starter app, sealed ciphertext, pentest artifacts)
         run: |
           semgrep scan \
             --config=p/default \
@@ -188,6 +202,7 @@ jobs:
             --config=p/kubernetes \
             --exclude='task-1-workload-hardening/app-source/**' \
             --exclude='task-1-workload-hardening/manifests/secrets/**' \
+            --exclude='task-4-recon-pentest/**' \
             --severity=ERROR \
             --error \
             --metrics=off
@@ -202,9 +217,11 @@ jobs:
             --config=p/default \
             --config=p/security-audit \
             --config=p/python \
+            --config=p/dockerfile \
             --config=p/kubernetes \
             --include='task-1-workload-hardening/app-source/**' \
             --include='task-1-workload-hardening/manifests/secrets/**' \
+            --include='task-4-recon-pentest/**' \
             --severity=ERROR \
             --metrics=off || true
 

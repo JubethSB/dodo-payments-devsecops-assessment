@@ -1,0 +1,22 @@
+# Paths excluded from Semgrep scanning.
+#
+# This file is honoured by the Semgrep CLI and the Semgrep GitHub app ("Semgrep
+# OSS" check). The workflow's own SAST gate (.github/workflows/ci-cd.yml) still
+# runs a FULL-repo scan and uploads every finding to the Security tab; these
+# excludes apply to what BLOCKS, matching the per-path exclusions documented in
+# that workflow and in .gitleaks.toml.
+#
+# Two deliberately-vulnerable areas, each excluded for a stated reason:
+
+# 1. The assignment's insecure starter service. It is the authorised target for
+#    Task 4 (yaml.load RCE on /import, SSRF on /fetch, cleartext PANs). Its
+#    vulnerabilities cannot be "fixed" without deleting the thing the pen test
+#    exists to find.
+task-1-workload-hardening/app-source/
+
+# 2. The entire Task 4 offensive tree: exploit scripts (YAML-RCE gadgets, SSRF
+#    drivers, os.system calls), a deliberately-root target Dockerfile with fake
+#    injected secrets, and evidence transcripts reproducing all of it. These are
+#    the deliverables of an offensive task against an authorised local target
+#    that never ships; flagging them as code defects is a category error.
+task-4-recon-pentest/
