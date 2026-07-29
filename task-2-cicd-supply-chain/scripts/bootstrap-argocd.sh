@@ -12,6 +12,25 @@
 # scaled to zero below; neither is needed for a single-application demo.
 set -euo pipefail
 
+# Locate tools rather than requiring them on PATH. On Windows, winget installs
+# into AppData\Local\Microsoft\WinGet and Docker Desktop keeps docker/kubectl
+# in its own resources directory; Git Bash inherits neither. $USER is unset in
+# Git Bash, so search roots come from $HOME / $LOCALAPPDATA.
+WINGET_ROOT="${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WinGet"
+_add_path() {
+  [ -d "$1" ] || return 0
+  case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1";; esac
+}
+_add_path "/c/Program Files/Docker/Docker/resources/bin"
+_add_path "$WINGET_ROOT/Links"
+_add_path "$HOME/AppData/Local/Microsoft/WinGet/Links"
+_add_path "/c/Program Files/GitHub CLI"
+for _g in "$WINGET_ROOT/Packages"/* "$HOME/AppData/Local/Microsoft/WinGet/Packages"/*; do
+  _add_path "$_g"
+done
+export PATH
+
+
 REPO_URL="${1:-}"
 ARGOCD_VERSION="${ARGOCD_VERSION:-v2.13.2}"
 NS=argocd

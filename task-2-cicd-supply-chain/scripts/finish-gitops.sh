@@ -22,8 +22,41 @@ log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
 
-command -v docker >/dev/null || die "docker not found on PATH"
-command -v k3d    >/dev/null || die "k3d not found on PATH"
+# Find the tools rather than demanding they be on PATH.
+#
+# On Windows these land in places Git Bash does not pick up: winget drops
+# binaries under AppData\Local\Microsoft\WinGet, and Docker Desktop keeps
+# docker and kubectl inside its own resources directory. Requiring the caller
+# to fix their PATH first is a bad first experience for a script whose whole
+# job is to remove manual steps.
+#
+# $USER is not set in Git Bash, and this script runs under `set -u`, so the
+# search roots come from $HOME (always set) with $LOCALAPPDATA as a fallback.
+WINGET_ROOT="${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WinGet"
+add_path() {
+  [ -d "$1" ] || return 0
+  case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1";; esac
+}
+add_path "/c/Program Files/Docker/Docker/resources/bin"
+add_path "$WINGET_ROOT/Links"
+add_path "$HOME/AppData/Local/Microsoft/WinGet/Links"
+add_path "/c/Program Files/GitHub CLI"
+# winget also drops binaries into versioned Packages directories that never
+# make it onto PATH.
+for g in "$WINGET_ROOT/Packages"/* "$HOME/AppData/Local/Microsoft/WinGet/Packages"/*; do
+  add_path "$g"
+done
+export PATH
+
+missing=""
+for t in docker k3d kubectl; do
+  command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+done
+[ -z "$missing" ] || die "could not find:$missing
+
+Looked on PATH, in Docker Desktop's resources/bin, and under winget's
+Links and Packages directories. If they are installed somewhere else, add
+that directory to PATH and run this again."
 
 log "Checking Docker"
 if ! docker info >/dev/null 2>&1; then
