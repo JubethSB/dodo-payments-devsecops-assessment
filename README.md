@@ -20,15 +20,9 @@ Runs locally on k3d. No cloud account.
 | [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Done | Istio mTLS STRICT; SPIFFE authz (200 vs 403); NetworkPolicy; gateway + canary |
 | [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Done | Passive OSINT of dodopayments.tech; 4 exploited findings on the local target, CVSS-scored |
 
-## Engineering handover & design rationale
-
-The [`docs/handover/`](./docs/handover/) directory is the full write-up behind the
-decisions: per-task deep dives (threat model, why each tool over its
-alternatives, the concepts in plain language, verification, and the problems
-actually hit and root-caused), a [repository review & submission audit](./docs/handover/repository-review.md),
-an [interview cheat sheet](./docs/handover/interview-cheat-sheet.md), and an
-[executive summary](./docs/handover/executive-summary.md). Start there if you want
-the *why*, not just the *what*.
+Each task folder has its own README covering approach, design decisions,
+reproduction, and verification, with captured evidence under its `evidence/`
+directory.
 
 ## Stack, and why
 
@@ -143,7 +137,7 @@ task README is mine.
 - [x] Repository public
 - [x] Top-level README links each task
 - [x] Per-task README with approach, reproduction, verification
-- [x] Architecture diagrams (Tasks 1, 2, 3 in their READMEs; system overview in [docs/architecture-overview.md](./docs/architecture-overview.md))
+- [x] Architecture diagrams (per-task, in each task's README)
 - [x] Evidence captured per task under each `evidence/` directory
 - [x] Task 4 report as standalone Markdown ([task-4-recon-pentest/pentest-report.md](./task-4-recon-pentest/pentest-report.md))
-- [ ] Screenshots, see [docs/screenshots-guide.md](./docs/screenshots-guide.md)
+- [x] Pipeline screenshots ([task-2-cicd-supply-chain/screenshots/](./task-2-cicd-supply-chain/screenshots/)) + live GitHub Actions runs
