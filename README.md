@@ -13,6 +13,16 @@ Runs locally on k3d. No cloud account.
 | [3: Service Mesh & Zero-Trust](./task-3-service-mesh-zero-trust/README.md) | Done | Istio mTLS STRICT; SPIFFE authz (200 vs 403); NetworkPolicy; gateway + canary |
 | [4: Recon & Pen Test](./task-4-recon-pentest/README.md) | Done | Passive OSINT of dodopayments.tech; 4 exploited findings on the local target, CVSS-scored |
 
+## Engineering handover & design rationale
+
+The [`docs/handover/`](./docs/handover/) directory is the full write-up behind the
+decisions: per-task deep dives (threat model, why each tool over its
+alternatives, the concepts in plain language, verification, and the problems
+actually hit and root-caused), a [repository review & submission audit](./docs/handover/repository-review.md),
+an [interview cheat sheet](./docs/handover/interview-cheat-sheet.md), and an
+[executive summary](./docs/handover/executive-summary.md). Start there if you want
+the *why*, not just the *what*.
+
 ## Stack, and why
 
 **k3d/k3s** rather than kind. kind couldn't create a cluster on this machine's

@@ -2,9 +2,9 @@
  EVIDENCE: how workload certs are issued, rotated and rooted
 ======================================================================
 
-$ istioctl proxy-config secret reporting-7fb448476b-q49sg -n payments
+$ istioctl proxy-config secret reporting-7fb448476b-ttmvl -n payments
 RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
-default           Cert Chain     ACTIVE     true           512291b42696e63ce7763c9a0ae03353     2026-07-30T11:51:44Z     2026-07-29T11:49:44Z
+default           Cert Chain     ACTIVE     true           6557c5c46b458da565258baf5622c532     2026-07-30T14:19:14Z     2026-07-29T14:17:14Z
 ROOTCA            CA             ACTIVE     true           0b294e0db311647bc0d092d4cff992a0     2036-07-26T09:10:32Z     2026-07-29T09:10:32Z
 
 ----------------------------------------------------------------------

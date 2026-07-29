@@ -4,10 +4,10 @@
 
 $ kubectl -n payments get pods -o custom-columns=NAME,INIT,CONTAINERS
 NAME                                   INIT                           CONTAINERS   READY
-ledger-api-5bd7cfb845-8tk2f            istio-validation,istio-proxy   ledger-api   true
-ledger-api-5bd7cfb845-dzwmd            istio-validation,istio-proxy   ledger-api   true
-reporting-7fb448476b-q49sg             istio-validation,istio-proxy   reporting    true
-unauthorised-client-78f8b4fd9c-ndb9p   istio-validation,istio-proxy   client       true
+ledger-api-5bd7cfb845-bd8b4            istio-validation,istio-proxy   ledger-api   true
+ledger-api-5bd7cfb845-bhwmv            istio-validation,istio-proxy   ledger-api   true
+reporting-7fb448476b-ttmvl             istio-validation,istio-proxy   reporting    true
+unauthorised-client-78f8b4fd9c-sbjld   istio-validation,istio-proxy   client       true
 
 Note where istio-proxy appears: in initContainers, not containers.
 Istio 1.30 injects it as a Kubernetes NATIVE SIDECAR - an init container

@@ -10,12 +10,12 @@ injection. This matters: a meshed pod cannot demonstrate this, because
 its own sidecar would transparently upgrade the connection to mTLS and
 the request would succeed for the wrong reason.
 
-It targets ledger-api's POD IP directly (10.42.0.235:8080), bypassing
+It targets ledger-api's POD IP directly (10.42.0.248:8080), bypassing
 the Service, so the only thing that can refuse it is the destination
 sidecar's STRICT listener.
 
-$ curl http://10.42.0.235:8080/health
-  curl: (7) Failed to connect to 10.42.0.235 port 8080 after 4 ms: Could not connect to server
+$ curl http://10.42.0.248:8080/health
+  curl: (7) Failed to connect to 10.42.0.248 port 8080 after 2 ms: Could not connect to server
 http_code=000command terminated with exit code 7
 
 REFUSED at the transport layer. Note there is NO HTTP status code:
@@ -34,8 +34,8 @@ evidence now comes from the effective listener config and the workload's
 issued certificate, which is stronger anyway - it shows what the proxy is
 actually enforcing rather than a summary.
 
-$ istioctl x describe pod reporting-7fb448476b-q49sg -n payments
-Pod: reporting-7fb448476b-q49sg
+$ istioctl x describe pod reporting-7fb448476b-ttmvl -n payments
+Pod: reporting-7fb448476b-ttmvl
    Pod Revision: default
    Pod Ports: 8081 (reporting)
 --------------------
@@ -48,7 +48,7 @@ Applied PeerAuthentication:
    default.payments
 Skipping Gateway information (no ingress gateway pods)
 
-$ istioctl proxy-config secret reporting-7fb448476b-q49sg -n payments   (the workload certificate)
+$ istioctl proxy-config secret reporting-7fb448476b-ttmvl -n payments   (the workload certificate)
 RESOURCE NAME     TYPE           STATUS     VALID CERT     SERIAL NUMBER                        NOT AFTER                NOT BEFORE
-default           Cert Chain     ACTIVE     true           512291b42696e63ce7763c9a0ae03353     2026-07-30T11:51:44Z     2026-07-29T11:49:44Z
+default           Cert Chain     ACTIVE     true           6557c5c46b458da565258baf5622c532     2026-07-30T14:19:14Z     2026-07-29T14:17:14Z
 ROOTCA            CA             ACTIVE     true           0b294e0db311647bc0d092d4cff992a0     2036-07-26T09:10:32Z     2026-07-29T09:10:32Z

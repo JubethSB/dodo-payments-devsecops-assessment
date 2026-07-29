@@ -3,15 +3,15 @@
 ======================================================================
 
 NAME                                                   POD-SELECTOR                                 AGE
-allow-dns-egress                                       <none>                                       156m
-allow-gateway-to-reporting                             app.kubernetes.io/name=reporting             156m
-allow-istiod-egress                                    <none>                                       156m
-allow-kubelet-probes                                   <none>                                       156m
-allow-ledger-api-ingress-from-reporting                app.kubernetes.io/name=ledger-api            156m
-allow-ledger-api-ingress-from-unauthorised-test-only   app.kubernetes.io/name=ledger-api            6m57s
-allow-reporting-egress-to-ledger-api                   app.kubernetes.io/name=reporting             156m
-allow-unauthorised-client-egress-test-only             app.kubernetes.io/name=unauthorised-client   6m57s
-default-deny-all                                       <none>                                       156m
+allow-dns-egress                                       <none>                                       5h10m
+allow-gateway-to-reporting                             app.kubernetes.io/name=reporting             5h10m
+allow-istiod-egress                                    <none>                                       5h10m
+allow-kubelet-probes                                   <none>                                       5h10m
+allow-ledger-api-ingress-from-reporting                app.kubernetes.io/name=ledger-api            5h10m
+allow-ledger-api-ingress-from-unauthorised-test-only   app.kubernetes.io/name=ledger-api            160m
+allow-reporting-egress-to-ledger-api                   app.kubernetes.io/name=reporting             5h10m
+allow-unauthorised-client-egress-test-only             app.kubernetes.io/name=unauthorised-client   160m
+default-deny-all                                       <none>                                       5h10m
 
 ----------------------------------------------------------------------
 WHAT THE NETWORK LAYER CATCHES THAT THE MESH DOES NOT
