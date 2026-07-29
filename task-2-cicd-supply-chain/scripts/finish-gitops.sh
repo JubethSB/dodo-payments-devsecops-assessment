@@ -22,30 +22,30 @@ log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[warn] %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m[fail] %s\033[0m\n' "$*" >&2; exit 1; }
 
-# Find the tools rather than demanding they be on PATH.
+# Locate tools rather than requiring them on PATH. On Windows, winget installs
+# into AppData/Local/Microsoft/WinGet (both Links and versioned Packages
+# directories) and Docker Desktop keeps docker/kubectl in its own resources
+# folder; Git Bash inherits neither.
 #
-# On Windows these land in places Git Bash does not pick up: winget drops
-# binaries under AppData\Local\Microsoft\WinGet, and Docker Desktop keeps
-# docker and kubectl inside its own resources directory. Requiring the caller
-# to fix their PATH first is a bad first experience for a script whose whole
-# job is to remove manual steps.
-#
-# $USER is not set in Git Bash, and this script runs under `set -u`, so the
-# search roots come from $HOME (always set) with $LOCALAPPDATA as a fallback.
-WINGET_ROOT="${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WinGet"
-add_path() {
+# Only POSIX-style paths may go into PATH. A Windows path like the value of
+# $LOCALAPPDATA cannot: PATH is colon-separated, so the drive letter becomes its
+# own entry and the remainder loses it. The failure is quiet and misleading,
+# `command -v k3d` then reports a path with no drive letter, which will not
+# execute. $HOME is already POSIX under Git Bash, and cygpath converts anything
+# else when it is available.
+_add_path() {
+  case "$1" in [A-Za-z]:*) return 0 ;; esac   # refuse Windows-style paths
   [ -d "$1" ] || return 0
   case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1";; esac
 }
-add_path "/c/Program Files/Docker/Docker/resources/bin"
-add_path "$WINGET_ROOT/Links"
-add_path "$HOME/AppData/Local/Microsoft/WinGet/Links"
-add_path "/c/Program Files/GitHub CLI"
-# winget also drops binaries into versioned Packages directories that never
-# make it onto PATH.
-for g in "$WINGET_ROOT/Packages"/* "$HOME/AppData/Local/Microsoft/WinGet/Packages"/*; do
-  add_path "$g"
-done
+_WINGET="$HOME/AppData/Local/Microsoft/WinGet"
+if [ ! -d "$_WINGET" ] && command -v cygpath >/dev/null 2>&1 && [ -n "${LOCALAPPDATA:-}" ]; then
+  _WINGET="$(cygpath -u "$LOCALAPPDATA")/Microsoft/WinGet"
+fi
+_add_path "/c/Program Files/Docker/Docker/resources/bin"
+_add_path "/c/Program Files/GitHub CLI"
+_add_path "$_WINGET/Links"
+for _g in "$_WINGET/Packages"/*; do _add_path "$_g"; done
 export PATH
 
 missing=""

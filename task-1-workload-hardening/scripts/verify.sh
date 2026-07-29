@@ -8,21 +8,29 @@
 set -uo pipefail   # deliberately no -e: negative tests are expected to fail
 
 # Locate tools rather than requiring them on PATH. On Windows, winget installs
-# into AppData\Local\Microsoft\WinGet and Docker Desktop keeps docker/kubectl
-# in its own resources directory; Git Bash inherits neither. $USER is unset in
-# Git Bash, so search roots come from $HOME / $LOCALAPPDATA.
-WINGET_ROOT="${LOCALAPPDATA:-$HOME/AppData/Local}/Microsoft/WinGet"
+# into AppData/Local/Microsoft/WinGet (both Links and versioned Packages
+# directories) and Docker Desktop keeps docker/kubectl in its own resources
+# folder; Git Bash inherits neither.
+#
+# Only POSIX-style paths may go into PATH. A Windows path like the value of
+# $LOCALAPPDATA cannot: PATH is colon-separated, so the drive letter becomes its
+# own entry and the remainder loses it. The failure is quiet and misleading,
+# `command -v k3d` then reports a path with no drive letter, which will not
+# execute. $HOME is already POSIX under Git Bash, and cygpath converts anything
+# else when it is available.
 _add_path() {
+  case "$1" in [A-Za-z]:*) return 0 ;; esac   # refuse Windows-style paths
   [ -d "$1" ] || return 0
   case ":$PATH:" in *":$1:"*) ;; *) PATH="$PATH:$1";; esac
 }
+_WINGET="$HOME/AppData/Local/Microsoft/WinGet"
+if [ ! -d "$_WINGET" ] && command -v cygpath >/dev/null 2>&1 && [ -n "${LOCALAPPDATA:-}" ]; then
+  _WINGET="$(cygpath -u "$LOCALAPPDATA")/Microsoft/WinGet"
+fi
 _add_path "/c/Program Files/Docker/Docker/resources/bin"
-_add_path "$WINGET_ROOT/Links"
-_add_path "$HOME/AppData/Local/Microsoft/WinGet/Links"
 _add_path "/c/Program Files/GitHub CLI"
-for _g in "$WINGET_ROOT/Packages"/* "$HOME/AppData/Local/Microsoft/WinGet/Packages"/*; do
-  _add_path "$_g"
-done
+_add_path "$_WINGET/Links"
+for _g in "$_WINGET/Packages"/*; do _add_path "$_g"; done
 export PATH
 
 
